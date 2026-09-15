@@ -208,7 +208,8 @@ export async function handleGrokRequest(p: OAuthCallParams, subPath: string): Pr
     return forwardResponsesNative(p, tokens[0].trim(), wantStream)
   }
 
-  const { request } = openAIToResponsesRequest(p.body)
+  // 上游只认裸模型 ID(带 providerId/ 前缀会被拒绝)
+  const { request } = openAIToResponsesRequest({ ...p.body, model: p.modelId })
   let lastError = ''
   let lastStatus = 502
 

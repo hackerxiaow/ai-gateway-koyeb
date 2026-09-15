@@ -206,7 +206,8 @@ export async function handleQwenRequest(p: OAuthCallParams): Promise<Response> {
       const upstream = await fetch(`${base}/chat/completions`, {
         method: 'POST',
         headers: qwenApiHeaders(token, wantStream),
-        body: JSON.stringify(p.body),
+        // 上游只认裸模型 ID(带 providerId/ 前缀会被拒绝)
+        body: JSON.stringify({ ...p.body, model: p.modelId }),
         signal: AbortSignal.timeout(600000),
       })
       if (!upstream.ok) {

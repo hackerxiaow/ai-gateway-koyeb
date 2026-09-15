@@ -195,7 +195,8 @@ export async function handleClaudeRequest(p: OAuthCallParams, subPath: string): 
     return forwardAnthropicNative(p, tokens[0].trim(), wantStream)
   }
 
-  const { request } = openAIToAnthropicRequest(p.body)
+  // 上游只认裸模型 ID(带 providerId/ 前缀会被拒绝)
+  const { request } = openAIToAnthropicRequest({ ...p.body, model: p.modelId })
   let lastError = ''
   let lastStatus = 502
 

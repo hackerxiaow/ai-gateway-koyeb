@@ -190,7 +190,8 @@ export async function handleCodexRequest(p: OAuthCallParams, subPath: string): P
     return forwardResponsesNative(p, tokens[0].trim(), wantStream)
   }
 
-  const { request } = openAIToResponsesRequest(p.body)
+  // 上游只认裸模型 ID(带 providerId/ 前缀会被 Codex 后端拒绝)
+  const { request } = openAIToResponsesRequest({ ...p.body, model: p.modelId })
   // Codex 后端不接受 max_output_tokens(传了直接 400: Unsupported parameter)
   delete request.max_output_tokens
   let lastError = ''
