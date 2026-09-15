@@ -74,21 +74,25 @@ export async function getCachedToken(env: Env, prefix: string, refreshToken: str
   if (!raw) return null
   try {
     const parsed = JSON.parse(raw) as CachedToken
-    if (parsed.accessToken && (parsed.expiresAt || 0) - 300_000 > Date.now()) return parsed
+    // 即使 access_token 已过期也要返回：里面存着上游轮换后的 refresh_token，
+    // 丢掉它就只能拿 apiKeys 里的旧 token 去刷新，会被上游判定为重放并作废整条会话
+    if (parsed.accessToken) return parsed
   } catch { /* re-refresh */ }
   return null
 }
 
 export async function putCachedToken(env: Env, prefix: string, refreshToken: string, value: CachedToken, expiresIn: number): Promise<void> {
   const cacheKey = prefix + (await sha256Hex(refreshToken))
+  // 存活时间必须长于 access_token，否则轮换后的 refresh_token 会随访问令牌一起过期
+  const ttl = Math.min(30 * 24 * 3600, Math.max(expiresIn * 2, 24 * 3600))
   await getKV(env).put(cacheKey, JSON.stringify(value), {
-    expirationTtl: Math.max(60, Math.min(expiresIn - 60, 30 * 24 * 3600)),
+    expirationTtl: ttl,
   }).catch(() => {})
 }
 
 /**
- * 统一的 token 刷新入口：先查缓存，未命中用（缓存的最新）refresh_token 调 refresher，
- * 结果写回 KV。refresher 返回 {accessToken, expiresIn, refreshToken?, extra?}。
+ * 统一的 token 刷新入口：先查缓存，未命中/已过期则用「最近一次轮换后的」refresh_token 调
+ * refresher，结果写回 KV。refresher 返回 {accessToken, expiresIn, refreshToken?, extra?}。
  */
 export async function resolveAccessToken(
   env: Env,
@@ -97,14 +101,17 @@ export async function resolveAccessToken(
   refresher: (token: string) => Promise<{ accessToken: string; expiresIn: number; refreshToken?: string; extra?: Record<string, string> }>,
 ): Promise<CachedToken> {
   const cached = await getCachedToken(env, prefix, refreshToken)
-  if (cached) return cached
-  const refreshed = await refresher(refreshToken)
+  if (cached && (cached.expiresAt || 0) - 300_000 > Date.now()) return cached
+  // 续期必须用轮换后的 token：重放 apiKeys 里的入口 token 会触发上游重用检测
+  const effective = cached?.currentRefreshToken || refreshToken
+  const refreshed = await refresher(effective)
   const value: CachedToken = {
     accessToken: refreshed.accessToken,
     expiresAt: Date.now() + refreshed.expiresIn * 1000,
-    currentRefreshToken: refreshed.refreshToken,
+    currentRefreshToken: refreshed.refreshToken || effective,
     extra: refreshed.extra,
   }
+  // 仍以入口 token 为 key，保证 apiKeys 里的原值可继续作为查询入口
   await putCachedToken(env, prefix, refreshToken, value, refreshed.expiresIn)
   return value
 }
