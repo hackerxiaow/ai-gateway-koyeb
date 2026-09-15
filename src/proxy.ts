@@ -127,16 +127,33 @@ export async function testModelConnection(
       headers['anthropic-version'] = '2023-06-01'
     }
 
-    const response = await fetch(url, {
+    let response = await fetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify({
         model: modelId,
         messages: [{ role: 'user', content: 'hi' }],
         max_tokens: 1,
+        stream: true,
       }),
       signal: AbortSignal.timeout(15000),
     })
+
+    if (!response.ok) {
+      const altResponse = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'hi' }],
+          max_tokens: 1,
+        }),
+        signal: AbortSignal.timeout(15000),
+      }).catch(() => null)
+      if (altResponse && altResponse.ok) {
+        response = altResponse
+      }
+    }
 
     if (response.ok) {
       return { success: true, message: '连接成功', statusCode: response.status }
