@@ -259,7 +259,7 @@ export async function handleTestModel(c: Context<{ Bindings: Env }>) {
     : ptype === 'antigravity'
       ? await testAntigravityRotating(c.env, enabledKeys.map(k => k.key), modelId, provider.project)
       : ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek'].includes(ptype)
-        ? await testOAuthProviderRotating(c.env, ptype, enabledKeys.map(k => k.key), modelId, provider.baseUrl)
+        ? await testOAuthProviderRotating(c.env, ptype, enabledKeys.map(k => k.key), modelId, provider.baseUrl, provider.id)
         : await testModelConnectionRotating(provider.baseUrl, enabledKeys.map(k => k.key), modelId, provider.apiType)
 
   return c.json<ApiResponse>({
@@ -304,7 +304,7 @@ export async function handleTestKeyNew(c: Context<{ Bindings: Env }>) {
 
   // OAuth 反代渠道: apiKey 即 refresh_token
   if (providerType && ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek'].includes(providerType)) {
-    const r = await testOAuthProvider(c.env, providerType, apiKey, model || OAUTH_DEFAULT_MODELS[providerType], url)
+    const r = await testOAuthProvider(c.env, providerType, apiKey, model || OAUTH_DEFAULT_MODELS[providerType], url, providerId)
     return c.json<ApiResponse>({
       success: true,
       data: { success: r.success, statusCode: r.statusCode || 0, message: r.message },
@@ -419,7 +419,7 @@ export async function handleTestModelNew(c: Context<{ Bindings: Env }>) {
 
   // OAuth 反代渠道: apiKey 即 refresh_token
   if (providerType && ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek'].includes(providerType)) {
-    const r = await testOAuthProvider(c.env, providerType, apiKey, model, url)
+    const r = await testOAuthProvider(c.env, providerType, apiKey, model, url, providerId)
     return c.json<ApiResponse>({
       success: true,
       data: { success: r.success, statusCode: r.statusCode || 0, message: r.message },
@@ -706,9 +706,10 @@ async function testOAuthProvider(
   refreshToken: string,
   modelId: string,
   baseUrl?: string,
+  providerId?: string,
 ): Promise<{ success: boolean; message: string; statusCode?: number }> {
   if (provider === 'claude') return testClaude(env, refreshToken, modelId)
-  if (provider === 'codex') return testCodex(env, refreshToken, modelId)
+  if (provider === 'codex') return testCodex(env, refreshToken, modelId, providerId)
   if (provider === 'kimi') return testKimi(env, refreshToken, modelId, baseUrl)
   if (provider === 'grok') return testGrok(env, refreshToken, modelId)
   if (provider === 'qwen') return testQwen(env, refreshToken, modelId)
@@ -723,12 +724,17 @@ async function testOAuthProviderRotating(
   refreshTokens: string[],
   modelId: string,
   baseUrl?: string,
+  providerId?: string,
 ): Promise<{ success: boolean; message: string; statusCode?: number }> {
   const list = (refreshTokens || []).filter((t) => t && t.trim())
-  if (list.length === 0) return { success: false, message: '该渠道未配置任何 refresh_token', statusCode: 0 }
+  if (list.length === 0) {
+    // codex 走中继时凭据在对端，渠道可不配 refresh_token，交给 testCodex 判定
+    if (provider === 'codex') return testOAuthProvider(env, provider, '', modelId, baseUrl, providerId)
+    return { success: false, message: '该渠道未配置任何 refresh_token', statusCode: 0 }
+  }
   let last: { success: boolean; message: string; statusCode?: number } = { success: false, message: '连接失败', statusCode: 0 }
   for (let i = 0; i < list.length; i++) {
-    const r = await testOAuthProvider(env, provider, list[i].trim(), modelId, baseUrl)
+    const r = await testOAuthProvider(env, provider, list[i].trim(), modelId, baseUrl, providerId)
     if (r.success) {
       return { ...r, message: list.length > 1 ? `${r.message} (账号 #${i + 1}/${list.length})` : r.message }
     }
