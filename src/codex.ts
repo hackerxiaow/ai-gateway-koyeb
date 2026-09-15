@@ -25,7 +25,7 @@ import {
   defer,
   resolveAccessToken,
 } from './oauth-common'
-import { openAIToResponsesRequest, responsesResponseToOpenAI, createOpenAIStreamFromResponses } from './responses-translate'
+import { openAIToResponsesRequest, createOpenAIStreamFromResponses, collectResponsesStreamToOpenAI } from './responses-translate'
 
 // ===== OAuth 客户端（来自 CLIProxyAPI internal/auth/codex） =====
 const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
@@ -194,6 +194,8 @@ export async function handleCodexRequest(p: OAuthCallParams, subPath: string): P
   const { request } = openAIToResponsesRequest({ ...p.body, model: p.modelId })
   // Codex 后端不接受 max_output_tokens(传了直接 400: Unsupported parameter)
   delete request.max_output_tokens
+  // Codex 后端强制 stream=true：客户端要非流式时先取 SSE，再本地聚合
+  request.stream = true
   let lastError = ''
   let lastStatus = 502
 
@@ -202,7 +204,7 @@ export async function handleCodexRequest(p: OAuthCallParams, subPath: string): P
       const { token, accountId } = await getAccessToken(p.env, refreshToken)
       const upstream = await fetch(`${CODEX_API_BASE}/responses`, {
         method: 'POST',
-        headers: apiHeaders(token, accountId, wantStream),
+        headers: apiHeaders(token, accountId, true),
         body: JSON.stringify(request),
         signal: AbortSignal.timeout(600000),
       })
@@ -223,13 +225,17 @@ export async function handleCodexRequest(p: OAuthCallParams, subPath: string): P
         })
       }
 
-      const rawText = await upstream.text()
-      let json: unknown
-      try { json = JSON.parse(rawText) } catch { return oauthErrorResponse(`上游返回非 JSON: ${rawText.slice(0, 200)}`, 502, 'upstream_error') }
-      const openai = responsesResponseToOpenAI(json, p.requestedModel)
+      // 非流式：上游给的是 SSE，本地聚合成 OpenAI JSON
+      if (!upstream.body) return oauthErrorResponse('上游未返回响应体', 502, 'upstream_error')
+      let openai: Record<string, any>
+      try {
+        openai = await collectResponsesStreamToOpenAI(upstream.body, p.requestedModel)
+      } catch (err) {
+        return oauthErrorResponse((err as Error).message || '上游流解析失败', 502, 'upstream_error')
+      }
       defer(p, recordOAuthUsage(p, {
-        promptTokens: Number((json as any)?.usage?.input_tokens) || 0,
-        completionTokens: Number((json as any)?.usage?.output_tokens) || 0,
+        promptTokens: Number(openai.usage?.prompt_tokens) || 0,
+        completionTokens: Number(openai.usage?.completion_tokens) || 0,
       }, true, 200))
       return new Response(JSON.stringify(openai), {
         status: 200,

@@ -324,6 +324,113 @@ export function createOpenAIStreamFromResponses(
 
 interface SseEvent { event: string; data: string }
 
+/**
+ * 消费 Responses SSE 流并聚合为单个 OpenAI chat.completion 响应。
+ * Codex 等上游强制 stream=true，客户端要非流式时在这里本地聚合（含文本、推理摘要、工具调用与用量）。
+ */
+export async function collectResponsesStreamToOpenAI(
+  upstream: ReadableStream<Uint8Array>,
+  requestedModel: string,
+): Promise<Record<string, any>> {
+  const decoder = new TextDecoder()
+  const parser = createSseParser()
+  const reader = upstream.getReader()
+
+  let text = ''
+  let reasoning = ''
+  const toolCalls: Array<{ id: string; name: string; args: string }> = []
+  const toolIndexByOutput = new Map<number, number>()
+  let promptTokens = 0
+  let completionTokens = 0
+  let finish = 'stop'
+  let failed = ''
+
+  const handle = (ev: SseEvent) => {
+    if (!ev.data || ev.data === '[DONE]') return
+    let payload: any
+    try { payload = JSON.parse(ev.data) } catch { return }
+    const type = payload?.type || ev.event
+    if (!type || !type.startsWith('response.')) return
+
+    switch (type) {
+      case 'response.output_item.added': {
+        const item = payload?.item || {}
+        if (item.type === 'function_call') {
+          toolIndexByOutput.set(Number(payload.output_index ?? -1), toolCalls.length)
+          toolCalls.push({
+            id: item.call_id || item.id || `call_${randomId().replace(/-/g, '').slice(0, 24)}`,
+            name: item.name || '',
+            args: '',
+          })
+        }
+        break
+      }
+      case 'response.output_text.delta': {
+        if (typeof payload.delta === 'string') text += payload.delta
+        break
+      }
+      case 'response.reasoning_summary_text.delta':
+      case 'response.reasoning_text.delta': {
+        if (typeof payload.delta === 'string') reasoning += payload.delta
+        break
+      }
+      case 'response.function_call_arguments.delta': {
+        const idx = toolIndexByOutput.get(Number(payload.output_index ?? -1))
+        if (idx !== undefined && typeof payload.delta === 'string') toolCalls[idx].args += payload.delta
+        break
+      }
+      case 'response.completed':
+      case 'response.incomplete': {
+        const usage = payload?.response?.usage || {}
+        promptTokens = Number(usage.input_tokens) || 0
+        completionTokens = Number(usage.output_tokens) || 0
+        if (toolCalls.length > 0) finish = 'tool_calls'
+        else if (type === 'response.incomplete') finish = 'length'
+        break
+      }
+      case 'response.failed': {
+        failed = payload?.response?.error?.message || '上游响应失败'
+        break
+      }
+      case 'error': {
+        failed = payload?.message || payload?.error?.message || '上游流错误'
+        break
+      }
+      default:
+        break
+    }
+  }
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    for (const ev of parser.feed(decoder.decode(value, { stream: true }))) handle(ev)
+  }
+  if (failed) throw new Error(failed)
+
+  const message: Record<string, any> = { role: 'assistant', content: text || null, refusal: null }
+  if (reasoning) message.reasoning_content = reasoning
+  if (toolCalls.length > 0) {
+    message.tool_calls = toolCalls.map((t) => ({
+      id: t.id,
+      type: 'function',
+      function: { name: t.name, arguments: t.args || '{}' },
+    }))
+  }
+  return {
+    id: `chatcmpl-resp-${randomId()}`,
+    object: 'chat.completion',
+    created: Math.floor(Date.now() / 1000),
+    model: requestedModel,
+    choices: [{ index: 0, message, finish_reason: finish, logprobs: null }],
+    usage: {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: promptTokens + completionTokens,
+    },
+  }
+}
+
 function createSseParser(): { feed: (chunk: string) => SseEvent[] } {
   let buffer = ''
   let currentEvent = ''
