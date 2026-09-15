@@ -191,6 +191,8 @@ export async function handleCodexRequest(p: OAuthCallParams, subPath: string): P
   }
 
   const { request } = openAIToResponsesRequest(p.body)
+  // Codex 后端不接受 max_output_tokens(传了直接 400: Unsupported parameter)
+  delete request.max_output_tokens
   let lastError = ''
   let lastStatus = 502
 
@@ -274,7 +276,7 @@ export async function testCodex(env: Env, refreshToken: string, modelId: string)
   if (!refreshToken) return { success: false, message: '未填写 refresh_token', statusCode: 0 }
   try {
     const { token, accountId } = await getAccessToken(env, refreshToken)
-    const { request } = openAIToResponsesRequest({ model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 16, stream: true })
+    const { request } = openAIToResponsesRequest({ model: modelId, messages: [{ role: 'user', content: 'hi' }], stream: true })
     request.stream = true
     let res = await fetch(`${CODEX_API_BASE}/responses`, {
       method: 'POST',
