@@ -1,3 +1,19 @@
+import crypto from 'node:crypto'
+
+// Polyfill global crypto for Node.js environment
+if (!globalThis.crypto) {
+  // @ts-ignore
+  globalThis.crypto = crypto
+} else {
+  if (!globalThis.crypto.randomUUID && crypto.randomUUID) {
+    globalThis.crypto.randomUUID = crypto.randomUUID.bind(crypto)
+  }
+  if (!globalThis.crypto.subtle && crypto.webcrypto) {
+    // @ts-ignore
+    globalThis.crypto.subtle = crypto.webcrypto.subtle
+  }
+}
+
 import { serve } from '@hono/node-server'
 import postgres from 'postgres'
 import app from './index'
