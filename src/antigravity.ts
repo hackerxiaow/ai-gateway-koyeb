@@ -16,6 +16,7 @@
 
 import type { Env, UsageRecord } from './types'
 import { getKV } from './storage-adapter'
+import { resolveAccessToken } from './oauth-common'
 import { addUsageRecord } from './storage'
 import { openAIToGeminiRequest, geminiResponseToOpenAI, createOpenAIStream } from './gemini-translate'
 
@@ -153,15 +154,15 @@ export async function exchangeAntigravityCode(env: Env, codeOrUrl: string, state
 // =====================================================================
 
 async function getAccessToken(env: Env, refreshToken: string): Promise<string> {
-  const cacheKey = AG_AT_PREFIX + (await sha256Hex(refreshToken))
-  const kv = getKV(env)
-  const cached = await kv.get(cacheKey)
-  if (cached) {
-    try {
-      const parsed = JSON.parse(cached) as { accessToken?: string; expiresAt?: number }
-      if (parsed.accessToken && (parsed.expiresAt || 0) - 300_000 > Date.now()) return parsed.accessToken
-    } catch { /* re-refresh */ }
-  }
+  const cached = await resolveAccessToken(env, AG_AT_PREFIX, refreshToken, (token) => refreshAntigravityToken(env, token))
+  return cached.accessToken
+}
+
+/** 刷新 access_token；上游若轮换 refresh_token 也一并回传，由 resolveAccessToken 链式保存 */
+async function refreshAntigravityToken(
+  env: Env,
+  refreshToken: string,
+): Promise<{ accessToken: string; expiresIn: number; refreshToken?: string }> {
   const form = new URLSearchParams({
     client_id: agClientCredential(env, 'AG_CLIENT_ID'),
     client_secret: agClientCredential(env, 'AG_CLIENT_SECRET'),
@@ -176,14 +177,14 @@ async function getAccessToken(env: Env, refreshToken: string): Promise<string> {
   })
   const text = await res.text()
   if (!res.ok) throw new Error(`Antigravity OAuth 刷新失败 HTTP ${res.status}: ${text.slice(0, 300)}`)
-  let json: { access_token?: string; expires_in?: number }
+  let json: { access_token?: string; expires_in?: number; refresh_token?: string }
   try { json = JSON.parse(text) } catch { throw new Error(`OAuth 刷新返回非 JSON: ${text.slice(0, 200)}`) }
   if (!json.access_token) throw new Error(`OAuth 刷新未返回 access_token: ${text.slice(0, 200)}`)
-  const expiresIn = Number(json.expires_in) || 3600
-  await kv.put(cacheKey, JSON.stringify({ accessToken: json.access_token, expiresAt: Date.now() + expiresIn * 1000 }), {
-    expirationTtl: Math.max(60, expiresIn - 60),
-  }).catch(() => {})
-  return json.access_token
+  return {
+    accessToken: json.access_token,
+    expiresIn: Number(json.expires_in) || 3600,
+    refreshToken: json.refresh_token || undefined,
+  }
 }
 
 // =====================================================================
