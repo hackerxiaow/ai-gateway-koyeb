@@ -443,16 +443,39 @@ export async function handleTestModelNew(c: Context<{ Bindings: Env }>) {
   const endpoint = apiType === 'anthropic' ? 'messages' : 'chat/completions'
 
   try {
-    const response = await fetch(`${cleanBase}/${endpoint}`, {
+    let response = await fetch(`${cleanBase}/${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(apiKey, apiType) },
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }),
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, stream: true }),
       signal: AbortSignal.timeout(15000),
     })
 
+    // 如果流式测试未成功，尝试不带 stream 的非流式测试（兼容部分要求/拒绝 stream 的上游）
+    if (!response.ok) {
+      const altResponse = await fetch(`${cleanBase}/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(apiKey, apiType) },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }),
+        signal: AbortSignal.timeout(15000),
+      }).catch(() => null)
+      if (altResponse && altResponse.ok) {
+        response = altResponse
+      }
+    }
+
+    let message: string | undefined
+    if (!response.ok) {
+      try {
+        const errJson = await response.json() as any
+        message = errJson.detail || errJson.error?.message || errJson.message
+      } catch {
+        try { message = await response.text() } catch { /* ignore */ }
+      }
+    }
+
     return c.json<ApiResponse>({
       success: true,
-      data: { success: response.ok, statusCode: response.status },
+      data: { success: response.ok, statusCode: response.status, message },
     })
   } catch (err) {
     return c.json<ApiResponse>({
