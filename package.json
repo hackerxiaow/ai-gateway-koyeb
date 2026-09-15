@@ -10,7 +10,7 @@
   "scripts": {
     "build": "npm run build:node",
     "start": "node dist/server.js",
-    "build:node": "mkdir -p dist && cp -f index.html dist/index.html && esbuild src/node.ts --bundle --format=esm --platform=node --target=node18 --outfile=dist/server.js",
+    "build:node": "mkdir -p dist && cp -f index.html dist/index.html && esbuild src/node.ts --bundle --format=esm --platform=node --target=node18 --inject:src/polyfill.ts --outfile=dist/server.js",
     "build:pages": "mkdir -p dist && cp -f index.html dist/index.html && echo \"{\\\"version\\\": 1, \\\"include\\\": [\\\"/*\\\"], \\\"exclude\\\": []}\" > dist/_routes.json && esbuild src/index.ts --bundle --format=esm --platform=neutral --target=es2022 --outfile=dist/_worker.js",
     "deploy:pages": "npm run build:pages && wrangler pages deploy dist --project-name ai-gateway"
   },
