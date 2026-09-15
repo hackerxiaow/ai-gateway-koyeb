@@ -1,0 +1,14 @@
+name = "ai-gateway"
+pages_build_output_dir = "dist"
+compatibility_date = "2025-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ai-gateway-db"
+database_id = "这里填入 D1 Database ID"
+
+# 如果配置了 R2 备份功能，取消下方注释
+# [[r2_buckets]]
+# binding = "ai_gateway_backup"
+# bucket_name = "ai-gateway-backup"

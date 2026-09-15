@@ -1,0 +1,24 @@
+{
+  "name": "ai-gateway-koyeb",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@hono/node-server": "^2.1.1",
+    "hono": "^4.12.27",
+    "postgres": "^3.4.9"
+  },
+  "scripts": {
+    "build": "npm run build:node",
+    "start": "node dist/server.js",
+    "build:node": "mkdir -p dist && cp -f index.html dist/index.html && esbuild src/node.ts --bundle --format=esm --platform=node --target=node18 --outfile=dist/server.js",
+    "build:pages": "mkdir -p dist && cp -f index.html dist/index.html && echo \"{\\\"version\\\": 1, \\\"include\\\": [\\\"/*\\\"], \\\"exclude\\\": []}\" > dist/_routes.json && esbuild src/index.ts --bundle --format=esm --platform=neutral --target=es2022 --outfile=dist/_worker.js",
+    "deploy:pages": "npm run build:pages && wrangler pages deploy dist --project-name ai-gateway"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "@types/node": "^26.5.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.2",
+    "wrangler": "^4.107.0"
+  }
+}
