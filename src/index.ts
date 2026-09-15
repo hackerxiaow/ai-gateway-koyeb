@@ -200,8 +200,8 @@ app.notFound((c) => {
 
 // ===== 错误处理 =====
 app.onError((err, c) => {
-  console.error('未捕获的错误:', err)
-  return c.json({ error: { message: '服务器内部错误', type: 'server_error' } }, 500)
+  console.error('App error:', err.stack || err.message || err)
+  return c.json({ error: { message: err.message || '服务器内部错误', type: 'server_error' } }, 500)
 })
 
 export default app
