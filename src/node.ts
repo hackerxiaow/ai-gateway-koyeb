@@ -2,7 +2,7 @@ import { serve } from '@hono/node-server'
 import postgres from 'postgres'
 import app from './index'
 
-const dbUrl = process.env.DATABASE_URL || 'postgresql://postgres:yxy.@990524gdg@db.pusivmawucsmkspnoqrf.supabase.co:5432/postgres'
+const dbUrl = process.env.DATABASE_URL || 'postgresql://postgres:yxy.%40990524gdg@db.pusivmawucsmkspnoqrf.supabase.co:5432/postgres'
 
 const sql = postgres(dbUrl, {
   prepare: false, // 禁用 prepared statements，兼容 Supabase Transaction/Session Pooler
