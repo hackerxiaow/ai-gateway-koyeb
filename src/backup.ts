@@ -41,8 +41,22 @@ async function importBackupData(env: Env, data: BackupData): Promise<{ kv: numbe
     for (const r of kv) {
       await env.PG`INSERT INTO kv_store (key, value) VALUES (${r.key}, ${r.value}) ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value`
     }
-    for (const r of usage) {
-      await env.PG`INSERT INTO usage_records (ts, provider, model, token, ok, status, prompt_tokens, completion_tokens, latency_ms) VALUES (${r.ts}, ${r.provider}, ${r.model}, ${r.token || ''}, ${Number(r.ok) || 0}, ${Number(r.status) || 0}, ${Number(r.prompt_tokens) || 0}, ${Number(r.completion_tokens) || 0}, ${Number(r.latency_ms) || 0})`
+    const chunkSize = 500
+    for (let i = 0; i < usage.length; i += chunkSize) {
+      const chunk = usage.slice(i, i + chunkSize).map((r) => ({
+        ts: r.ts,
+        provider: r.provider,
+        model: r.model,
+        token: r.token || '',
+        ok: Number(r.ok) || 0,
+        status: Number(r.status) || 0,
+        prompt_tokens: Number(r.prompt_tokens) || 0,
+        completion_tokens: Number(r.completion_tokens) || 0,
+        latency_ms: Number(r.latency_ms) || 0,
+      }))
+      if (chunk.length > 0) {
+        await env.PG`INSERT INTO usage_records ${env.PG(chunk, 'ts', 'provider', 'model', 'token', 'ok', 'status', 'prompt_tokens', 'completion_tokens', 'latency_ms')}`
+      }
     }
   } else if (env.DB) {
     await env.DB.prepare("DELETE FROM kv_store WHERE key NOT LIKE 'admin:session:%' AND key != 'admin:credentials' AND key != 'telegram:backup'").run()
