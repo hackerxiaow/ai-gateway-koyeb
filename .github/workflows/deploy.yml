@@ -9,9 +9,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Install Koyeb CLI
         run: |
           curl -fsSL https://raw.githubusercontent.com/koyeb/koyeb-cli/master/install.sh | sh
@@ -21,5 +18,8 @@ jobs:
         env:
           KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
         run: |
-          token="${KOYEB_TOKEN:-6afswre0v58fww62zmghj9l8yst4wl3ptxj7pygz7v03gywtxhzvipvbc0uklnls}"
-          koyeb service redeploy ai-gateway-koyeb/ai-gateway --token "$token"
+          if [ -z "$KOYEB_TOKEN" ]; then
+            echo "::error::KOYEB_TOKEN secret is not set"
+            exit 1
+          fi
+          koyeb service redeploy api/ai-gateway --token "$KOYEB_TOKEN"
