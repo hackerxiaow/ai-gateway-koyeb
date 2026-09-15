@@ -275,12 +275,21 @@ export async function testCodex(env: Env, refreshToken: string, modelId: string)
   try {
     const { token, accountId } = await getAccessToken(env, refreshToken)
     const { request } = openAIToResponsesRequest({ model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 16 })
-    const res = await fetch(`${CODEX_API_BASE}/responses`, {
+    let res = await fetch(`${CODEX_API_BASE}/responses`, {
       method: 'POST',
-      headers: apiHeaders(token, accountId, false),
+      headers: apiHeaders(token, accountId, true),
       body: JSON.stringify(request),
       signal: AbortSignal.timeout(30000),
     })
+    if (!res.ok) {
+      const altRes = await fetch(`${CODEX_API_BASE}/responses`, {
+        method: 'POST',
+        headers: apiHeaders(token, accountId, false),
+        body: JSON.stringify(request),
+        signal: AbortSignal.timeout(30000),
+      }).catch(() => null)
+      if (altRes && altRes.ok) res = altRes
+    }
     if (res.ok) return { success: true, message: '连接成功', statusCode: 200 }
     return { success: false, message: `HTTP ${res.status}: ${(await readErrorBody(res)).slice(0, 200)}`, statusCode: res.status }
   } catch (err) {
