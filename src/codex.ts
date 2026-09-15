@@ -274,18 +274,21 @@ export async function testCodex(env: Env, refreshToken: string, modelId: string)
   if (!refreshToken) return { success: false, message: '未填写 refresh_token', statusCode: 0 }
   try {
     const { token, accountId } = await getAccessToken(env, refreshToken)
-    const { request } = openAIToResponsesRequest({ model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 16 })
+    const { request } = openAIToResponsesRequest({ model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 16, stream: true })
+    request.stream = true
     let res = await fetch(`${CODEX_API_BASE}/responses`, {
       method: 'POST',
       headers: apiHeaders(token, accountId, true),
-      body: JSON.stringify({ ...request, stream: true }),
+      body: JSON.stringify(request),
       signal: AbortSignal.timeout(30000),
     })
     if (!res.ok) {
+      const altRequest = { ...request }
+      delete altRequest.stream
       const altRes = await fetch(`${CODEX_API_BASE}/responses`, {
         method: 'POST',
         headers: apiHeaders(token, accountId, false),
-        body: JSON.stringify(request),
+        body: JSON.stringify(altRequest),
         signal: AbortSignal.timeout(30000),
       }).catch(() => null)
       if (altRes && altRes.ok) res = altRes
