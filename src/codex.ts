@@ -41,50 +41,8 @@ const CODEX_ORIGINATOR = 'codex-tui'
 const AT_PREFIX = 'codex:at:'
 const STATE_PREFIX = 'codex:oauth:'
 
-/**
- * 上游中继配置(存于 kv_store 的 codex:upstream):
- *   {"url": "https://<网关>/v1", "key": "sk_cf_..."}
- * 用于本机出口被 chatgpt.com 拦截的部署(如 Cloudflare Workers)，把 Responses 请求
- * 转交给能直连的出网网关，由对端完成鉴权与转发。留空则直连 chatgpt.com。
- */
-const UPSTREAM_RELAY_KEY = 'codex:upstream'
-
 /** 凭据刷新/鉴权失败(区别于网络错误)：需要按 401 语义返回 */
 class CodexAuthError extends Error {}
-
-interface CodexUpstreamRelay {
-  /** 对端网关根地址，如 https://api.example.com */
-  url: string
-  /** 对端网关的转发 Key(Bearer) */
-  key: string
-}
-
-async function getCodexUpstreamRelay(env: Env): Promise<CodexUpstreamRelay | null> {
-  try {
-    const raw = await getKV(env).get(UPSTREAM_RELAY_KEY)
-    if (!raw) return null
-    const cfg = JSON.parse(raw) as { url?: string; key?: string }
-    const url = String(cfg?.url || '').trim().replace(/\/+$/, '')
-    const key = String(cfg?.key || '').trim()
-    return url && key ? { url, key } : null
-  } catch {
-    return null
-  }
-}
-
-/** 中继请求头: 鉴权交给对端网关，本机不参与 OAuth */
-function relayHeaders(relay: CodexUpstreamRelay, stream: boolean): Record<string, string> {
-  return {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${relay.key}`,
-    'Accept': stream ? 'text/event-stream' : 'application/json',
-  }
-}
-
-/** 中继按 providerId/modelId 路由，故需带上渠道前缀 */
-function relayModelId(p: OAuthCallParams): string {
-  return `${p.providerId}/${p.modelId}`
-}
 
 // =====================================================================
 // JWT 解析（取 chatgpt_account_id）
@@ -224,21 +182,19 @@ function apiHeaders(accessToken: string, accountId: string, stream: boolean): Re
 // =====================================================================
 
 export async function handleCodexRequest(p: OAuthCallParams, subPath: string): Promise<Response> {
-  const relay = await getCodexUpstreamRelay(p.env)
   const tokens = (p.refreshTokens || []).filter((t) => t && t.trim())
-  // 走中继时凭据由对端网关持有，本渠道无需配置 refresh_token
-  if (tokens.length === 0 && !relay) {
+  if (tokens.length === 0) {
     return oauthErrorResponse('该 codex 渠道未配置凭据：请在「API Key」里每行填入一个 OpenAI OAuth refresh_token（可点「用 ChatGPT 账号授权」获取）', 400, 'configuration_error')
   }
   const wantStream = p.body?.stream === true
 
   // 原生 Responses 协议透传（/v1/responses）
   if (subPath === 'responses-passthrough') {
-    return forwardResponsesNative(p, tokens[0]?.trim() || '', wantStream, relay)
+    return forwardResponsesNative(p, tokens[0].trim(), wantStream)
   }
 
-  // 直连时上游只认裸模型 ID(带 providerId/ 前缀会被 Codex 后端拒绝)；走中继则靠前缀路由
-  const { request } = openAIToResponsesRequest({ ...p.body, model: relay ? relayModelId(p) : p.modelId })
+  // 上游只认裸模型 ID(带 providerId/ 前缀会被 Codex 后端拒绝)
+  const { request } = openAIToResponsesRequest({ ...p.body, model: p.modelId })
   // Codex 后端不接受 max_output_tokens(传了直接 400: Unsupported parameter)
   delete request.max_output_tokens
   // Codex 后端强制 stream=true：客户端要非流式时先取 SSE，再本地聚合
@@ -246,22 +202,12 @@ export async function handleCodexRequest(p: OAuthCallParams, subPath: string): P
   let lastError = ''
   let lastStatus = 502
 
-  // 走中继时凭据轮换由对端负责，本机只发一次
-  const attempts: string[] = relay ? [''] : tokens
-  for (const refreshToken of attempts) {
+  for (const refreshToken of tokens) {
     try {
-      let endpoint = `${CODEX_API_BASE}/responses`
-      let headers: Record<string, string>
-      if (relay) {
-        endpoint = `${relay.url}/v1/responses`
-        headers = relayHeaders(relay, true)
-      } else {
-        const { token, accountId } = await getAccessToken(p.env, refreshToken)
-        headers = apiHeaders(token, accountId, true)
-      }
-      const upstream = await fetch(endpoint, {
+      const { token, accountId } = await getAccessToken(p.env, refreshToken)
+      const upstream = await fetch(`${CODEX_API_BASE}/responses`, {
         method: 'POST',
-        headers,
+        headers: apiHeaders(token, accountId, true),
         body: JSON.stringify(request),
         signal: AbortSignal.timeout(600000),
       })
@@ -309,34 +255,25 @@ export async function handleCodexRequest(p: OAuthCallParams, subPath: string): P
 }
 
 /** /v1/responses 原生协议透传：请求体已是 Responses 格式，仅替换鉴权头并强制 store=false */
-async function forwardResponsesNative(p: OAuthCallParams, refreshToken: string, wantStream: boolean, relay: CodexUpstreamRelay | null): Promise<Response> {
+async function forwardResponsesNative(p: OAuthCallParams, refreshToken: string, wantStream: boolean): Promise<Response> {
   try {
+    const { token, accountId } = await getAccessToken(p.env, refreshToken)
     const body = { ...(p.body as Record<string, any>) }
     if (body.store === undefined) body.store = false
-    let endpoint = `${CODEX_API_BASE}/responses`
-    let headers: Record<string, string>
-    if (relay) {
-      endpoint = `${relay.url}/v1/responses`
-      headers = relayHeaders(relay, wantStream)
-      body.model = relayModelId(p)
-    } else {
-      const { token, accountId } = await getAccessToken(p.env, refreshToken)
-      headers = apiHeaders(token, accountId, wantStream)
-    }
-    const upstream = await fetch(endpoint, {
+    const upstream = await fetch(`${CODEX_API_BASE}/responses`, {
       method: 'POST',
-      headers,
+      headers: apiHeaders(token, accountId, wantStream),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(600000),
     })
     if (!upstream.ok) {
       return oauthErrorResponse(`HTTP ${upstream.status}: ${(await readErrorBody(upstream)).slice(0, 300)}`, upstream.status, 'upstream_error')
     }
-    const responseHeaders: Record<string, string> = {
+    const headers: Record<string, string> = {
       'Content-Type': upstream.headers.get('Content-Type') || (wantStream ? 'text/event-stream' : 'application/json'),
       'Cache-Control': 'no-store',
     }
-    return new Response(upstream.body, { status: 200, headers: responseHeaders })
+    return new Response(upstream.body, { status: 200, headers })
   } catch (err) {
     // 凭据失效按 401 返回，避免 Cloudflare 边缘吞掉 5xx 响应体
     const authFailed = err instanceof CodexAuthError
@@ -348,31 +285,7 @@ async function forwardResponsesNative(p: OAuthCallParams, refreshToken: string, 
 // 后台：连通性测试
 // =====================================================================
 
-export async function testCodex(env: Env, refreshToken: string, modelId: string, providerId?: string): Promise<{ success: boolean; message: string; statusCode?: number }> {
-  const relay = await getCodexUpstreamRelay(env)
-  // 走中继时本渠道不需要 refresh_token，凭据在中继侧
-  if (relay) {
-    if (!providerId) return { success: false, message: '未确定渠道 ID，无法经中继测试', statusCode: 0 }
-    try {
-      const res = await fetch(`${relay.url}/v1/responses`, {
-        method: 'POST',
-        headers: relayHeaders(relay, true),
-        body: JSON.stringify({
-          model: `${providerId}/${modelId}`,
-          input: [{ role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
-          instructions: '',
-          store: false,
-          stream: true,
-        }),
-        signal: AbortSignal.timeout(30000),
-      })
-      if (res.ok) return { success: true, message: '连接成功（经中继）', statusCode: 200 }
-      return { success: false, message: `HTTP ${res.status}: ${(await readErrorBody(res)).slice(0, 200)}`, statusCode: res.status }
-    } catch (err) {
-      return { success: false, message: (err as Error).message || '中继连接失败' }
-    }
-  }
-
+export async function testCodex(env: Env, refreshToken: string, modelId: string): Promise<{ success: boolean; message: string; statusCode?: number }> {
   if (!refreshToken) return { success: false, message: '未填写 refresh_token', statusCode: 0 }
   try {
     const { token, accountId } = await getAccessToken(env, refreshToken)
