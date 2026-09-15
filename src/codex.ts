@@ -278,7 +278,7 @@ export async function testCodex(env: Env, refreshToken: string, modelId: string)
     let res = await fetch(`${CODEX_API_BASE}/responses`, {
       method: 'POST',
       headers: apiHeaders(token, accountId, true),
-      body: JSON.stringify(request),
+      body: JSON.stringify({ ...request, stream: true }),
       signal: AbortSignal.timeout(30000),
     })
     if (!res.ok) {
