@@ -12,6 +12,7 @@ import {
   getUsageSummary,
   getAdminCredentials,
 } from './storage'
+import { getKV } from './storage-adapter'
 import { testModelConnectionRotating } from './proxy'
 import { testAntigravity, testAntigravityRotating, buildAntigravityAuthUrl, exchangeAntigravityCode, fetchAntigravityModels, fetchAntigravityQuota } from './antigravity'
 import {
@@ -20,6 +21,8 @@ import {
 import {
   buildCodexAuthUrl, exchangeCodexCode, testCodex,
 } from './codex'
+import { encryptSecret, decryptSecret } from './deepseek-account'
+import { loginWithPassword } from './deepseek-login'
 import {
   startKimiDeviceFlow, pollKimiDeviceFlow, testKimi, fetchKimiModels,
 } from './kimi'
@@ -32,6 +35,10 @@ import {
 import {
   testDeepSeek, fetchDeepSeekModels,
 } from './deepseek'
+import {
+  startCodebuddyDeviceFlow, pollCodebuddyDeviceFlow, testCodebuddy, fetchCodebuddyModels, fetchCodebuddyStatus,
+  checkinCodebuddy, codebuddyCronToken,
+} from './codebuddy'
 import { fetchZaiModels } from './zai'
 import { fetchOpenCodeModels, isOpenCodeProvider, resolveOpenCodeUrls, resolveProviderMirrorUrls, testOpenCodeModel } from './opencode'
 import { PROXY_KEY_PREFIX, EXPIRY_OPTIONS, OPENCODE_DEFAULT_URL } from './config'
@@ -71,6 +78,14 @@ function normalizeMirrorUrls(value: unknown): string[] | undefined {
     : String(value).split('\n').flatMap(s => s.split(',')).map(s => s.trim())
   const cleaned = [...new Set(parts.map(s => String(s).trim()).filter(Boolean))]
   return cleaned.length > 0 ? cleaned : undefined
+}
+
+/**
+ * 归一化渠道区域（仅 codebuddy 使用）：只接受 'cn' | 'global'，
+ * 其它值（含空串/null）一律返回 undefined —— 表示「未指定」，由 baseUrl 回退判定。
+ */
+function normalizeRegion(value: unknown): 'cn' | 'global' | undefined {
+  return value === 'cn' || value === 'global' ? value : undefined
 }
 
 /** 从模型真实 id 生成对外 alias：去掉 :free、/free 或 -free 后缀 */
@@ -126,9 +141,174 @@ export async function handleStatus(c: Context<{ Bindings: Env }>) {
 
 // ===== 渠道 CRUD =====
 
+/**
+ * 对返回给前端的 provider 做脱敏：密文本身不必出网（前端只需要知道「有没有密码」）。
+ * 把 passwordEnc 换成布尔标记 hasPassword，避免密文在浏览器/日志里流转。
+ */
+function redactProvider(p: Provider): Provider & { dsAccount?: Record<string, unknown> } {
+  if (!p.dsAccount) return p
+  const { passwordEnc, userToken, ...rest } = p.dsAccount
+  return {
+    ...p,
+    dsAccount: {
+      ...rest,
+      hasPassword: !!passwordEnc,
+      tokenPreview: userToken ? `${userToken.slice(0, 8)}…${userToken.slice(-4)}` : '',
+      tokenSet: !!userToken,
+    } as unknown as Provider['dsAccount'],
+  }
+}
+
 export async function handleGetProviders(c: Context<{ Bindings: Env }>) {
   const providers = await getProviders(c.env)
-  return c.json<ApiResponse<Provider[]>>({ success: true, data: providers })
+  return c.json<ApiResponse<Provider[]>>({ success: true, data: providers.map(redactProvider) })
+}
+
+// ===== DeepSeek 账号托管（方案 B：网关代登录） =====
+
+/**
+ * 保存/更新某个 deepseek 渠道的账号信息。
+ * body: { email?, mobile?, areaCode?, password? } —— password 明文进、密文存。
+ * 传空字符串的 password 表示**清除已存密码**。
+ */
+export async function handleSaveDsAccount(c: Context<{ Bindings: Env }>) {
+  const id = c.req.param('id')
+  if (!id) return c.json<ApiResponse>({ success: false, message: '缺少 id 参数' }, 400)
+  const provider = await getProvider(c.env, id)
+  if (!provider) return c.json<ApiResponse>({ success: false, message: '渠道不存在' }, 404)
+  if (provider.type !== 'deepseek') {
+    return c.json<ApiResponse>({ success: false, message: '仅 DeepSeek 渠道支持账号托管' }, 400)
+  }
+
+  const body: any = await c.req.json().catch(() => null)
+  if (!body) return c.json<ApiResponse>({ success: false, message: '请求体需为 JSON' }, 400)
+
+  const prev = provider.dsAccount || {}
+  const next: NonNullable<Provider['dsAccount']> = { ...prev }
+  if (body.email !== undefined) next.email = String(body.email || '').trim() || undefined
+  if (body.mobile !== undefined) next.mobile = String(body.mobile || '').trim() || undefined
+  if (body.areaCode !== undefined) next.areaCode = String(body.areaCode || '').trim() || undefined
+
+  if (body.password !== undefined) {
+    const plain = String(body.password || '')
+    if (!plain) {
+      // 显式清除
+      delete next.passwordEnc
+    } else {
+      const enc = await encryptSecret(c.env, plain)
+      if (!enc) {
+        return c.json<ApiResponse>(
+          { success: false, message: '密码加密失败：网关未配置 ADMIN_PASSWORD，或加密不可用' },
+          503,
+        )
+      }
+      next.passwordEnc = enc
+    }
+  }
+
+  if (!next.email && !next.mobile) {
+    return c.json<ApiResponse>({ success: false, message: '需要填写邮箱或手机号之一' }, 400)
+  }
+
+  const updated = await updateProvider(c.env, id, { dsAccount: next })
+  return c.json<ApiResponse<unknown>>({
+    success: true,
+    data: redactProvider(updated!),
+    message: '账号已保存（密码加密存储）',
+  })
+}
+
+/**
+ * 用已存（或本次传入）的账号密码**代登录**，换取 userToken 并写回渠道。
+ *
+ * 安全约束：
+ *   - 只允许 type=deepseek 的渠道；
+ *   - 不返回密码/密文，只返回登录结果摘要；
+ *   - 登录成功会把 userToken 写回 dsAccount.userToken（方便「已托管」状态可见）。
+ *
+ * body 可选：{ email?, mobile?, areaCode?, password? } —— 传了就用传的（先存后登），
+ * 不传就用库里已存的密文解密后登录。
+ */
+export async function handleDsLogin(c: Context<{ Bindings: Env }>) {
+  const id = c.req.param('id')
+  if (!id) return c.json<ApiResponse>({ success: false, message: '缺少 id 参数' }, 400)
+  const provider = await getProvider(c.env, id)
+  if (!provider) return c.json<ApiResponse>({ success: false, message: '渠道不存在' }, 404)
+  if (provider.type !== 'deepseek') {
+    return c.json<ApiResponse>({ success: false, message: '仅 DeepSeek 渠道支持代登录' }, 400)
+  }
+
+  const body: any = await c.req.json().catch(() => ({}))
+  const saved = provider.dsAccount || {}
+
+  const email = (body?.email !== undefined ? String(body.email || '') : saved.email || '').trim() || undefined
+  const mobile = (body?.mobile !== undefined ? String(body.mobile || '') : saved.mobile || '').trim() || undefined
+  const areaCode = (body?.areaCode !== undefined ? String(body.areaCode || '') : saved.areaCode || '').trim() || undefined
+
+  let password = ''
+  if (body?.password) {
+    password = String(body.password)
+  } else if (saved.passwordEnc) {
+    const dec = await decryptSecret(c.env, saved.passwordEnc)
+    if (!dec) {
+      return c.json<ApiResponse>(
+        {
+          success: false,
+          message: '已存密码无法解密（可能改过 ADMIN_PASSWORD）。请重新填写密码后重试。',
+        },
+        409,
+      )
+    }
+    password = dec
+  }
+  if (!password) {
+    return c.json<ApiResponse>({ success: false, message: '没有可用密码：请先填写账号密码' }, 400)
+  }
+  if (!email && !mobile) {
+    return c.json<ApiResponse>({ success: false, message: '需要填写邮箱或手机号之一' }, 400)
+  }
+
+  const result = await loginWithPassword({ email, mobile, password, areaCode })
+
+  // 写回结果（无论成败都记时间线；成功才存 token）
+  const next: NonNullable<Provider['dsAccount']> = {
+    ...saved,
+    email,
+    mobile,
+    areaCode,
+    lastLoginAt: new Date().toISOString(),
+    lastLoginResult: result.ok ? 'ok' : result.msg || result.error || '登录失败',
+    lastRotated: result.rotated,
+  }
+  if (result.ok && result.userToken) next.userToken = result.userToken
+  // 若本次是带明文密码登录，顺手把密码也存下来（下次免输）
+  if (body?.password && password) {
+    const enc = await encryptSecret(c.env, password)
+    if (enc) next.passwordEnc = enc
+  }
+  await updateProvider(c.env, id, { dsAccount: next })
+
+  if (!result.ok) {
+    return c.json<ApiResponse>({ success: false, message: result.msg || result.error || '登录失败', data: result }, 200)
+  }
+  return c.json<ApiResponse<unknown>>({
+    success: true,
+    data: redactProvider((await getProvider(c.env, id))!),
+    message: result.muted
+      ? '登录成功，但该账号当前处于禁言/受限状态'
+      : result.rotated
+        ? '登录成功，已按服务端要求轮换令牌'
+        : '登录成功，userToken 已保存',
+  })
+}
+
+/** 清除某个渠道托管的账号（含密文与 token） */
+export async function handleClearDsAccount(c: Context<{ Bindings: Env }>) {
+  const id = c.req.param('id')
+  if (!id) return c.json<ApiResponse>({ success: false, message: '缺少 id 参数' }, 400)
+  const updated = await updateProvider(c.env, id, { dsAccount: undefined })
+  if (!updated) return c.json<ApiResponse>({ success: false, message: '渠道不存在' }, 404)
+  return c.json<ApiResponse<unknown>>({ success: true, data: redactProvider(updated), message: '已清除托管账号' })
 }
 
 export async function handleCreateProvider(c: Context<{ Bindings: Env }>) {
@@ -161,6 +341,7 @@ apiKeys: normalizeArray(body.apiKeys, (k) => ({ key: k, enabled: true })),
     mirrorUrls: normalizeMirrorUrls(body.mirrorUrls),
     project: body.project,
     location: body.location,
+    region: normalizeRegion(body.region),
     voice: body.voice,
     rate: body.rate,
     volume: body.volume,
@@ -191,6 +372,7 @@ export async function handleUpdateProvider(c: Context<{ Bindings: Env }>) {
   if (body.mirrorUrls !== undefined) updates.mirrorUrls = normalizeMirrorUrls(body.mirrorUrls)
   if (body.project !== undefined) updates.project = body.project
   if (body.location !== undefined) updates.location = body.location
+  if (body.region !== undefined) updates.region = normalizeRegion(body.region)
 if (body.apiKeys !== undefined) {
     updates.apiKeys = normalizeArray(body.apiKeys, (k) => ({ key: k, enabled: true }))
   }
@@ -258,8 +440,8 @@ export async function handleTestModel(c: Context<{ Bindings: Env }>) {
     ? await testOpenCodeModel(provider.baseUrl, enabledKeys, modelId, resolveProviderMirrorUrls(c.env, provider))
     : ptype === 'antigravity'
       ? await testAntigravityRotating(c.env, enabledKeys.map(k => k.key), modelId, provider.project)
-      : ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek'].includes(ptype)
-        ? await testOAuthProviderRotating(c.env, ptype, enabledKeys.map(k => k.key), modelId, provider.baseUrl)
+      : ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek', 'codebuddy'].includes(ptype)
+        ? await testOAuthProviderRotating(c.env, ptype, enabledKeys.map(k => k.key), modelId, provider.baseUrl, provider.id, provider.region)
         : await testModelConnectionRotating(provider.baseUrl, enabledKeys.map(k => k.key), modelId, provider.apiType)
 
   return c.json<ApiResponse>({
@@ -303,8 +485,8 @@ export async function handleTestKeyNew(c: Context<{ Bindings: Env }>) {
   }
 
   // OAuth 反代渠道: apiKey 即 refresh_token
-  if (providerType && ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek'].includes(providerType)) {
-    const r = await testOAuthProvider(c.env, providerType, apiKey, model || OAUTH_DEFAULT_MODELS[providerType], url)
+  if (providerType && ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek', 'codebuddy'].includes(providerType)) {
+    const r = await testOAuthProvider(c.env, providerType, apiKey, model || OAUTH_DEFAULT_MODELS[providerType], url, providerId)
     return c.json<ApiResponse>({
       success: true,
       data: { success: r.success, statusCode: r.statusCode || 0, message: r.message },
@@ -418,8 +600,8 @@ export async function handleTestModelNew(c: Context<{ Bindings: Env }>) {
   }
 
   // OAuth 反代渠道: apiKey 即 refresh_token
-  if (providerType && ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek'].includes(providerType)) {
-    const r = await testOAuthProvider(c.env, providerType, apiKey, model, url)
+  if (providerType && ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek', 'codebuddy'].includes(providerType)) {
+    const r = await testOAuthProvider(c.env, providerType, apiKey, model, url, providerId)
     return c.json<ApiResponse>({
       success: true,
       data: { success: r.success, statusCode: r.statusCode || 0, message: r.message },
@@ -573,7 +755,7 @@ export async function handleAntigravityQuotaAll(c: Context<{ Bindings: Env }>) {
 
 // ===== OAuth 反代渠道内置授权（claude / codex / kimi / grok） =====
 
-const OAUTH_PROVIDERS = new Set(['claude', 'codex', 'kimi', 'grok', 'qwen'])
+const OAUTH_PROVIDERS = new Set(['claude', 'codex', 'kimi', 'grok', 'qwen', 'codebuddy'])
 // 无 OAuth 流程、凭据需从浏览器复制的渠道类型（deepseek 网页版 userToken）
 const MANUAL_TOKEN_PROVIDERS = new Set(['deepseek'])
 
@@ -585,6 +767,7 @@ const OAUTH_DEFAULT_MODELS: Record<string, string> = {
   grok: 'grok-4.6',
   qwen: 'coder-model',
   deepseek: 'deepseek-v4-flash',
+  codebuddy: 'deepseek-v4.1-flash',
 }
 
 interface OAuthPollResult {
@@ -596,7 +779,7 @@ interface OAuthPollResult {
 /** 发起授权：claude/codex 返回授权链接；kimi/grok/qwen 返回设备码信息 */
 export async function handleOAuthStart(c: Context<{ Bindings: Env }>) {
   const provider = c.req.param('provider') || ''
-  const body = await c.req.json<{ baseUrl?: string }>().catch(() => ({} as { baseUrl?: string }))
+  const body = await c.req.json<{ baseUrl?: string; region?: string }>().catch(() => ({} as { baseUrl?: string; region?: string }))
   if (!OAUTH_PROVIDERS.has(provider)) {
     return c.json<ApiResponse>({ success: false, message: `不支持的 OAuth 渠道类型: ${provider}` }, 400)
   }
@@ -608,6 +791,14 @@ export async function handleOAuthStart(c: Context<{ Bindings: Env }>) {
     if (provider === 'codex') {
       const { url, state } = await buildCodexAuthUrl(c.env)
       return c.json<ApiResponse<{ mode: 'redirect'; url: string; state: string }>>({ success: true, data: { mode: 'redirect', url, state } })
+    }
+    if (provider === 'codebuddy') {
+      // 设备流：上游签发 state + 授权链接，浏览器登录后由 poll 轮询换 token
+      const flow = await startCodebuddyDeviceFlow(c.env, body.baseUrl, body.region)
+      return c.json<ApiResponse<{ mode: 'redirect-poll'; url: string; state: string; realm: string }>>({
+        success: true,
+        data: { mode: 'redirect-poll', url: flow.authUrl, state: flow.state, realm: flow.realm },
+      })
     }
     const flow = provider === 'kimi'
       ? await startKimiDeviceFlow(c.env, body.baseUrl)
@@ -653,13 +844,11 @@ export async function handleOAuthPoll(c: Context<{ Bindings: Env }>) {
     return c.json<ApiResponse>({ success: false, message: 'state 为必填项' }, 400)
   }
   try {
-    const r = provider === 'kimi'
-      ? await pollKimiDeviceFlow(c.env, state)
-      : provider === 'qwen'
-        ? await pollQwenDeviceFlow(c.env, state)
-        : provider === 'grok'
-          ? await pollGrokDeviceFlow(c.env, state)
-          : null
+    let r: { status: 'pending' | 'ok' | 'error'; message?: string; refreshToken?: string } | null = null
+    if (provider === 'kimi') r = await pollKimiDeviceFlow(c.env, state)
+    else if (provider === 'qwen') r = await pollQwenDeviceFlow(c.env, state)
+    else if (provider === 'grok') r = await pollGrokDeviceFlow(c.env, state)
+    else if (provider === 'codebuddy') r = await pollCodebuddyDeviceFlow(c.env, state)
     if (!r) {
       return c.json<ApiResponse>({ success: false, message: `${provider} 渠道使用授权链接，请用 complete 接口` }, 400)
     }
@@ -675,7 +864,7 @@ export async function handleOAuthPoll(c: Context<{ Bindings: Env }>) {
 /** 拉取可用模型（claude / kimi，凭据为 refresh_token） */
 export async function handleOAuthModels(c: Context<{ Bindings: Env }>) {
   const provider = c.req.param('provider') || ''
-  const { apiKey, baseUrl } = await c.req.json<{ apiKey?: string; baseUrl?: string }>()
+  const { apiKey, baseUrl, region } = await c.req.json<{ apiKey?: string; baseUrl?: string; region?: string }>()
   if (!apiKey) {
     return c.json<ApiResponse>({ success: false, message: '请先填写 refresh_token' }, 400)
   }
@@ -696,6 +885,10 @@ export async function handleOAuthModels(c: Context<{ Bindings: Env }>) {
     const r = fetchDeepSeekModels()
     return c.json<ApiResponse<{ models: string[] }>>({ success: true, data: { models: r.models } })
   }
+  if (provider === 'codebuddy') {
+    const r = await fetchCodebuddyModels(c.env, apiKey, baseUrl, region)
+    return c.json<ApiResponse<{ models: string[]; message?: string }>>({ success: r.success, data: { models: r.models, message: r.message }, message: r.message })
+  }
   return c.json<ApiResponse>({ success: false, message: `${provider} 渠道请手动填写模型列表` }, 400)
 }
 
@@ -706,6 +899,8 @@ async function testOAuthProvider(
   refreshToken: string,
   modelId: string,
   baseUrl?: string,
+  providerId?: string,
+  region?: string,
 ): Promise<{ success: boolean; message: string; statusCode?: number }> {
   if (provider === 'claude') return testClaude(env, refreshToken, modelId)
   if (provider === 'codex') return testCodex(env, refreshToken, modelId)
@@ -713,6 +908,7 @@ async function testOAuthProvider(
   if (provider === 'grok') return testGrok(env, refreshToken, modelId)
   if (provider === 'qwen') return testQwen(env, refreshToken, modelId)
   if (provider === 'deepseek') return testDeepSeek(env, refreshToken, modelId)
+  if (provider === 'codebuddy') return testCodebuddy(env, refreshToken, modelId, baseUrl, region)
   return { success: false, message: `未知 OAuth 渠道类型: ${provider}` }
 }
 
@@ -723,12 +919,18 @@ async function testOAuthProviderRotating(
   refreshTokens: string[],
   modelId: string,
   baseUrl?: string,
+  providerId?: string,
+  region?: string,
 ): Promise<{ success: boolean; message: string; statusCode?: number }> {
   const list = (refreshTokens || []).filter((t) => t && t.trim())
-  if (list.length === 0) return { success: false, message: '该渠道未配置任何 refresh_token', statusCode: 0 }
+  if (list.length === 0) {
+    // codex 走中继时凭据在对端，渠道可不配 refresh_token，交给 testCodex 判定
+    if (provider === 'codex') return testOAuthProvider(env, provider, '', modelId, baseUrl, providerId, region)
+    return { success: false, message: '该渠道未配置任何 refresh_token', statusCode: 0 }
+  }
   let last: { success: boolean; message: string; statusCode?: number } = { success: false, message: '连接失败', statusCode: 0 }
   for (let i = 0; i < list.length; i++) {
-    const r = await testOAuthProvider(env, provider, list[i].trim(), modelId, baseUrl)
+    const r = await testOAuthProvider(env, provider, list[i].trim(), modelId, baseUrl, providerId, region)
     if (r.success) {
       return { ...r, message: list.length > 1 ? `${r.message} (账号 #${i + 1}/${list.length})` : r.message }
     }
@@ -738,6 +940,252 @@ async function testOAuthProviderRotating(
     break
   }
   return last
+}
+
+// ===== CodeBuddy 账号状态（积分/套餐余额） =====
+
+/**
+ * 查询 codebuddy 渠道的账号状态。
+ * 支持两种入参：传 providerId（取该渠道第 index 个启用凭据）+ baseUrl + region；
+ * 或直接传 refreshToken / baseUrl / region（新增渠道尚未保存时用表单里的值）。
+ */
+export async function handleCodebuddyStatus(c: Context<{ Bindings: Env }>) {
+  type CbStatusBody = { refreshToken?: string; providerId?: string; baseUrl?: string; region?: string; index?: number }
+  const body = await c.req.json<CbStatusBody>().catch(() => ({} as CbStatusBody))
+  let refreshToken = (body.refreshToken || '').trim()
+  let baseUrl = body.baseUrl || ''
+  let region = body.region
+  if (!refreshToken && body.providerId) {
+    const provider = await getProvider(c.env, body.providerId)
+    if (!provider) return c.json<ApiResponse>({ success: false, message: `渠道 "${body.providerId}" 不存在` }, 404)
+    const keys = provider.apiKeys.filter((k) => k.enabled)
+    const idx = Number.isInteger(body.index) ? (body.index as number) : 0
+    refreshToken = (keys[idx]?.key || '').trim()
+    baseUrl = baseUrl || provider.baseUrl
+    region = region || provider.region
+  }
+  if (!refreshToken) {
+    return c.json<ApiResponse>({ success: false, message: '请先填写 refresh_token，或先保存渠道再查询' }, 400)
+  }
+  const r = await fetchCodebuddyStatus(c.env, refreshToken, baseUrl, region)
+  return c.json<ApiResponse<typeof r>>({ success: r.ok, data: r, message: r.message })
+}
+
+/** 常量时间字符串比较，避免用 `===` 比较令牌时泄露长度/前缀信息。 */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return diff === 0
+}
+
+// ===== 定时签到的当日节流状态 =====
+
+/** 定时签到状态在 KV 里的键（记录最近一次真正执行的结果，供节流与外部监控读取） */
+const CRON_CHECKIN_STATE_KEY = 'cron:checkin:state'
+/** 上次执行有失败时，多久之后才允许重试（避免外部监控高频 ping 打爆上游） */
+const CRON_CHECKIN_RETRY_COOLDOWN_MS = 30 * 60 * 1000
+
+interface CbCronState {
+  /** 最近一次执行签到的日期（东八区，YYYY-MM-DD） */
+  date: string
+  /** 最近一次执行的 ISO 时间戳 */
+  at: string
+  total: number
+  ok: number
+  already: number
+  failed: number
+}
+
+/**
+ * 取东八区日期串。
+ * 用东八区而不是 UTC，避免「北京凌晨 0–8 点」这段被算成前一天，导致漏签或重复签。
+ */
+function shanghaiDate(d: Date = new Date()): string {
+  return new Date(d.getTime() + 8 * 3600 * 1000).toISOString().slice(0, 10)
+}
+
+async function readCronState(env: Env): Promise<CbCronState | null> {
+  try {
+    const raw = await getKV(env).get(CRON_CHECKIN_STATE_KEY)
+    return raw ? (JSON.parse(raw) as CbCronState) : null
+  } catch {
+    return null
+  }
+}
+
+async function writeCronState(env: Env, state: CbCronState): Promise<void> {
+  try {
+    await getKV(env).put(CRON_CHECKIN_STATE_KEY, JSON.stringify(state))
+  } catch {
+    /* 状态写失败不影响签到结论 */
+  }
+}
+
+export interface CbCheckinSummary {
+  total: number
+  ok: number
+  already: number
+  failed: number
+  results: Array<Record<string, unknown>>
+}
+
+/**
+ * 批量签到：遍历**所有** type=codebuddy 渠道的**全部启用凭据**，逐账号签到。
+ * 账号之间间隔 200ms，避免对上游造成瞬时压力。「今日已签到」计入 already 而非 failed。
+ * 后台批量与定时任务共用这一份实现。
+ */
+export async function runCodebuddyCheckinAll(env: Env): Promise<CbCheckinSummary> {
+  const providers = (await getProviders(env)).filter((p) => p.type === 'codebuddy')
+  const results: Array<Record<string, unknown>> = []
+  let ok = 0
+  let already = 0
+  let failed = 0
+  let done = 0
+  for (const p of providers) {
+    const keys = p.apiKeys.filter((k) => k.enabled && (k.key || '').trim())
+    for (let i = 0; i < keys.length; i++) {
+      if (done > 0) await new Promise((res) => setTimeout(res, 200))
+      const r = await checkinCodebuddy(env, keys[i].key.trim(), p.baseUrl, p.region)
+      done++
+      if (r.ok) {
+        if (r.already) already++
+        else ok++
+      } else {
+        failed++
+      }
+      results.push({
+        providerId: p.id,
+        providerName: p.name,
+        index: i,
+        ok: r.ok,
+        already: !!r.already,
+        message: r.message,
+        realm: r.realm,
+        nickname: r.nickname,
+        remain: r.remain,
+      })
+    }
+  }
+  return { total: results.length, ok, already, failed, results }
+}
+
+/**
+ * 定时签到入口（`GET|POST /cron/checkin`）。
+ *
+ * 鉴权：不走管理员会话，改用由 `ADMIN_PASSWORD` 单向派生的**专用令牌**
+ * （`X-Cron-Token` 头，或 `?token=`）。权限最小化：令牌只能触发签到，拿不到任何渠道配置。
+ * 未配置 ADMIN_PASSWORD 时**失败关闭**（503）。
+ *
+ * 之所以同时支持 GET：外部存活监控（UptimeRobot / BetterStack 之类）通常只能配一个 URL，
+ * 让它顺手把签到也触发了，就不必额外维护一套定时器。
+ *
+ * **当日节流**（关键）：监控可能几分钟 ping 一次，绝不能每次都真签到。规则：
+ *  - 当天已**全部成功** → 直接跳过，不再打上游；
+ *  - 当天有失败 → 允许重试，但距上次尝试不足 30 分钟则跳过（避免打爆上游）；
+ *  - 还没有任何 CodeBuddy 渠道（total=0）→ 不落状态，每次都很轻量。
+ *
+ * 查询参数：
+ *  - `token=`  令牌（等价于 `X-Cron-Token` 头）
+ *  - `status=1` 只回报状态、不触发签到（人工/监控查看用）
+ *  - `force=1`  忽略当日节流，强制执行一次
+ */
+export async function handleCronCheckin(c: Context<{ Bindings: Env }>) {
+  const expected = await codebuddyCronToken(c.env)
+  if (!expected) {
+    return c.json<ApiResponse>({ success: false, message: '网关未配置 ADMIN_PASSWORD，定时签到不可用' }, 503)
+  }
+  const body = await c.req.json<{ token?: string }>().catch(() => ({} as { token?: string }))
+  const provided = (c.req.header('X-Cron-Token') || c.req.query('token') || body.token || '').trim()
+  if (!provided || !timingSafeEqual(provided, expected)) {
+    return c.json<ApiResponse>({ success: false, message: '令牌无效' }, 401)
+  }
+
+  const today = shanghaiDate()
+  const prev = await readCronState(c.env)
+
+  // 只回报状态，不触发
+  if (c.req.query('status') === '1') {
+    return c.json<ApiResponse<Record<string, unknown>>>({
+      success: true,
+      data: { action: 'status', date: today, last: prev },
+      message: prev
+        ? `最近一次签到：${prev.date}（共 ${prev.total} 个账号，新签到 ${prev.ok}、已签到 ${prev.already}、失败 ${prev.failed}）`
+        : '还没有执行过签到',
+    })
+  }
+
+  const force = c.req.query('force') === '1'
+  if (!force && prev && prev.date === today) {
+    const cooling = prev.failed > 0 && Date.now() - Date.parse(prev.at) < CRON_CHECKIN_RETRY_COOLDOWN_MS
+    if (prev.failed === 0 || cooling) {
+      return c.json<ApiResponse<Record<string, unknown>>>({
+        success: true,
+        data: { action: 'skipped', ...prev, date: today, results: [] },
+        message: prev.failed === 0
+          ? `今日（${today}）已签到，跳过。共 ${prev.total} 个账号：新签到 ${prev.ok}、已签到 ${prev.already}`
+          : `今日已尝试过且刚失败过，${Math.ceil(CRON_CHECKIN_RETRY_COOLDOWN_MS / 60000)} 分钟内不再重试`,
+      })
+    }
+  }
+
+  const data = await runCodebuddyCheckinAll(c.env)
+  // 没有任何渠道时不落状态：保持轻量，等用户配好渠道后自然生效
+  if (data.total > 0) {
+    await writeCronState(c.env, {
+      date: today, at: new Date().toISOString(),
+      total: data.total, ok: data.ok, already: data.already, failed: data.failed,
+    })
+  }
+  return c.json<ApiResponse<Record<string, unknown>>>({
+    success: true,
+    data: { action: 'checkin', date: today, ...data },
+    message: data.total === 0
+      ? '没有已配置的 CodeBuddy 渠道（跳过）'
+      : `共 ${data.total} 个账号：新签到 ${data.ok}、已签到 ${data.already}、失败 ${data.failed}`,
+  })
+}
+
+/**
+ * CodeBuddy 每日签到。
+ *  - 单账号：传 `refreshToken`（或 `providerId` + `index`），语义同 /status。
+ *  - 批量：传 `all:true`，遍历所有 type=codebuddy 渠道的**全部启用凭据**。
+ * 「今日已签到」计入 already 而非 failed。
+ */
+export async function handleCodebuddyCheckin(c: Context<{ Bindings: Env }>) {
+  type CbCheckinBody = { refreshToken?: string; providerId?: string; baseUrl?: string; region?: string; index?: number; all?: boolean }
+  const body = await c.req.json<CbCheckinBody>().catch(() => ({} as CbCheckinBody))
+
+  // ===== 批量模式 =====
+  if (body.all) {
+    const data = await runCodebuddyCheckinAll(c.env)
+    return c.json<ApiResponse<CbCheckinSummary>>({
+      success: true,
+      data,
+      message: data.total === 0
+        ? '没有已配置的 CodeBuddy 渠道（跳过）'
+        : `共 ${data.total} 个账号：新签到 ${data.ok}、已签到 ${data.already}、失败 ${data.failed}`,
+    })
+  }
+
+  // ===== 单账号模式 =====
+  let refreshToken = (body.refreshToken || '').trim()
+  let baseUrl = body.baseUrl || ''
+  let region = normalizeRegion(body.region)
+  if (!refreshToken && body.providerId) {
+    const provider = await getProvider(c.env, body.providerId)
+    if (!provider) return c.json<ApiResponse>({ success: false, message: `渠道 "${body.providerId}" 不存在` }, 404)
+    const keys = provider.apiKeys.filter((k) => k.enabled)
+    const idx = Number.isInteger(body.index) ? (body.index as number) : 0
+    refreshToken = (keys[idx]?.key || '').trim()
+    baseUrl = baseUrl || provider.baseUrl
+    region = region || provider.region
+  }
+  if (!refreshToken) {
+    return c.json<ApiResponse>({ success: false, message: '请先填写 refresh_token，或先保存渠道再签到' }, 400)
+  }
+  const r = await checkinCodebuddy(c.env, refreshToken, baseUrl, region)
+  return c.json<ApiResponse<typeof r>>({ success: r.ok, data: r, message: r.message })
 }
 
 // ===== 令牌管理 =====

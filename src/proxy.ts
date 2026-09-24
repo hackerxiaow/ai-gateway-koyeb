@@ -20,6 +20,21 @@ function extractUsage(body: unknown): { promptTokens: number; completionTokens: 
   return { promptTokens: 0, completionTokens: 0 }
 }
 
+/**
+ * SSE 响应必须原样透传。
+ * 只要把上游的流读成整段（arrayBuffer/text）再回吐，客户端在整个生成期间就收不到任何字节，
+ * 长的回答会被判超时并重连。代价是无法在读流时解析 usage，流式请求按 0 token 记账。
+ * 返回 null 表示不是流式响应，调用方按原逻辑缓冲处理。
+ */
+function passthroughEventStream(response: Response): Response | null {
+  const contentType = response.headers.get('content-type') || ''
+  if (!contentType.includes('text/event-stream') || !response.body) return null
+  const headers = new Headers()
+  headers.set('Content-Type', contentType)
+  headers.set('Cache-Control', 'no-store')
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
+}
+
 /** 读取响应体（保留原始字节），返回 JSON 解析结果与原始 Response */
 async function readResponseWithUsage(response: Response): Promise<{ body: string; json: unknown }> {
   const buf = await response.arrayBuffer()
@@ -473,12 +488,12 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
       })
     }
 
-    // ===== OAuth 反代渠道 (type = claude / codex / kimi / grok / qwen / deepseek，复刻 CLIProxyAPI 等实现) =====
-    const OAUTH_TYPES = ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek']
+    // ===== OAuth 反代渠道 (type = claude / codex / kimi / grok / qwen / deepseek / codebuddy) =====
+    const OAUTH_TYPES = ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek', 'codebuddy']
     if (OAUTH_TYPES.includes(providerType)) {
       const supported = providerType === 'claude'
         ? ['chat/completions', 'messages']
-        : providerType === 'kimi' || providerType === 'qwen' || providerType === 'deepseek'
+        : providerType === 'kimi' || providerType === 'qwen' || providerType === 'deepseek' || providerType === 'codebuddy'
           ? ['chat/completions']
           : ['chat/completions', 'responses']
       if (!supported.includes(subPath)) {
@@ -522,6 +537,11 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
         const { handleDeepSeekRequest } = await import('./deepseek')
         return handleDeepSeekRequest(oauthParams, subPath)
       }
+      if (providerType === 'codebuddy') {
+        // CodeBuddy(腾讯) 反代：上游强制 stream，非流式由网关本地聚合；region 决定国内版/国际版
+        const { handleCodebuddyRequest } = await import('./codebuddy')
+        return handleCodebuddyRequest(oauthParams, provider.baseUrl, provider.region)
+      }
       const { handleGrokRequest } = await import('./grok')
       return handleGrokRequest({ ...oauthParams, body: subPath === 'responses' ? nativeBody : (body as Record<string, any>) }, subPath === 'responses' ? 'responses-passthrough' : 'translate')
     }
@@ -536,6 +556,30 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
         body: forwardPayload as string,
         mirrorUrls: resolveProviderMirrorUrls(c.env, provider),
       })
+      const headers = new Headers(response.headers)
+      headers.set('Cache-Control', 'no-store')
+
+      // 流式响应必须原样透传：任何对流体的包装（tee 旁路统计、整体缓冲）都会让运行时
+      // 迟迟不向下游吐出数据，客户端表现为长时间无响应后重连。因此这里不解析流内容，
+      // 用量按 0 token 记账（宁可统计失真，也不能让对话卡住）。
+      const isEventStream = (response.headers.get('content-type') || '').includes('text/event-stream')
+      if (isEventStream && response.body) {
+        const record: UsageRecord = {
+          ts: new Date().toISOString(),
+          provider: providerId,
+          model: modelSafe,
+          token: maskedToken,
+          ok: response.ok,
+          status: response.status,
+          promptTokens: 0,
+          completionTokens: 0,
+          latencyMs: Date.now() - startedAt,
+        }
+        await addUsageRecord(c.env, record).catch(() => {})
+        headers.delete('content-length')
+        return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
+      }
+
       // 读取 body 提取 usage（opencode 返回 OpenAI 兼容 JSON）
       const { body: responseBody, json } = await readResponseWithUsage(response)
       const { promptTokens, completionTokens } = extractUsage(json)
@@ -551,8 +595,6 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
         latencyMs: Date.now() - startedAt,
       }
       await addUsageRecord(c.env, record).catch(() => {})
-      const headers = new Headers(response.headers)
-      headers.set('Cache-Control', 'no-store')
       return new Response(responseBody, { status: response.status, statusText: response.statusText, headers })
     }
 
@@ -588,6 +630,23 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
           body: forwardPayload,
           signal: AbortSignal.timeout(60000),
         })
+        // 流式响应直接透传，避免整段缓冲导致客户端长时间收不到数据而重连
+        const passthrough = passthroughEventStream(response)
+        if (passthrough) {
+          const record: UsageRecord = {
+            ts: new Date().toISOString(),
+            provider: providerId,
+            model: modelSafe,
+            token: maskedToken,
+            ok: response.ok,
+            status: response.status,
+            promptTokens: 0,
+            completionTokens: 0,
+            latencyMs: Date.now() - startedAt,
+          }
+          await addUsageRecord(c.env, record).catch(() => {})
+          return passthrough
+        }
         // 读取 body 提取 usage 并记录
         const { body: responseBody, json } = await readResponseWithUsage(response)
         const { promptTokens, completionTokens } = extractUsage(json)
@@ -698,6 +757,24 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
             healthUpdated = true
           }
           if (healthUpdated) await writeHealth(c.env, providerId, healthData)
+
+          // 流式响应直接透传，避免整段缓冲导致客户端长时间收不到数据而重连
+          const passthrough = passthroughEventStream(response)
+          if (passthrough) {
+            const record: UsageRecord = {
+              ts: new Date().toISOString(),
+              provider: providerId,
+              model: modelSafe,
+              token: maskedToken,
+              ok: true,
+              status: response.status,
+              promptTokens: 0,
+              completionTokens: 0,
+              latencyMs: Date.now() - startedAt,
+            }
+            await addUsageRecord(c.env, record).catch(() => {})
+            return passthrough
+          }
 
           // 读取 body 提取 usage 并记录
           const { body: responseBody, json } = await readResponseWithUsage(response)

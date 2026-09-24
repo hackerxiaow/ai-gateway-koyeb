@@ -16,11 +16,20 @@ export interface Provider {
   baseUrl: string
   apiType?: 'openai' | 'anthropic'
   /**
-   * 渠道类型: openai | openai-video | agnes-video | azure-tts | antigravity
-   *          | claude | codex | kimi | grok | qwen (OAuth 反代, 复刻 CLIProxyAPI)
+   * 渠道类型: openai | openai-video | agnes-video | azure-tts | antigravity | vertex | devin
+   *          | claude | codex | kimi | grok | qwen | codebuddy (OAuth 反代, 复刻 CLIProxyAPI)
    *          | deepseek (官方 API Key / 网页 userToken 反代) | zai (Z.AI 预设, 缺省 openai)
+   *
+   * codebuddy: 腾讯 CodeBuddy/WorkBuddy 账号反代（凭据为 refresh_token，上游 /v2/chat/completions
+   *            强制 stream，非流式由网关本地聚合）。区域由 region 字段显式指定，
+   *            留空时回退按 baseUrl 是否含 workbuddy.ai 判定。
    */
   type?: string
+  /**
+   * CodeBuddy 区域(仅 type=codebuddy 使用)：cn = 国内版(copilot.tencent.com / codebuddy.cn)，
+   * global = 国际版(workbuddy.ai)。两套账号体系完全独立，凭据不可混用。
+   */
+  region?: 'cn' | 'global'
   apiKeys: ApiKeyEntry[]
   models: Model[]
   enabled: boolean
@@ -35,6 +44,42 @@ export interface Provider {
   rate?: string
   volume?: string
   pitch?: string
+  /**
+   * DeepSeek 网页版账号(仅 type=deepseek 使用, 可选)。
+   *
+   * 用途：网关**代登录**换取 userToken，免去用户手动从浏览器抠 token。
+   * 密码经 `deepseek-account.ts` 的 AES-GCM 可逆加密后存储(`passwordEnc`)，
+   * 密钥由 `ADMIN_PASSWORD` + HKDF 派生 —— 因此**修改管理员密码会使已存密码失效**，
+   * 届时需重新填写（网关会失败关闭并提示，不会静默用错密码）。
+   *
+   * ⚠️ 这是「把账号密码托管给网关」的取舍：方便 vs 托管风险。仅在你信任
+   *    自己部署的这套网关时启用。留空则完全走「粘贴 userToken」的老路。
+   */
+  dsAccount?: {
+    /** 邮箱（与 mobile 二选一） */
+    email?: string
+    /** 手机号（不含区号） */
+    mobile?: string
+    /** 区号，默认 +86 */
+    areaCode?: string
+    /** 密码密文（v1.<iv>.<ct>），永不明文存 */
+    passwordEnc?: string
+    /** 上次代登录成功拿到的 userToken（明文，另有约 24h 有效期） */
+    userToken?: string
+    /** 上次登录时间(ISO)，成功与失败都记，便于看时间线 */
+    lastLoginAt?: string
+    /** 上次登录结果简述（成功为 ok / 失败为错误摘要），用于 UI 显示 */
+    lastLoginResult?: string
+    /** 上次设备校验是否发生令牌轮换 */
+    lastRotated?: boolean
+    /**
+     * 以下三个字段**仅存在于返回给前端的脱敏视图**（后端 redactProvider 注入），
+     * 存储层不写这三个字段。类型上并列声明以便前端读取。
+     */
+    hasPassword?: boolean
+    tokenSet?: boolean
+    tokenPreview?: string
+  }
   createdAt: string
   updatedAt: string
 }
@@ -113,6 +158,8 @@ export interface CreateProviderRequest {
   baseUrl: string
   apiType?: 'openai' | 'anthropic'
   type?: string
+  /** CodeBuddy 区域(仅 type=codebuddy 使用)：cn 国内版 / global 国际版 */
+  region?: 'cn' | 'global'
   apiKeys?: Array<{ key: string; enabled: boolean }>
   models?: Array<{ id: string; enabled: boolean }> | string[]
   mirrorUrls?: string[] | string
@@ -130,6 +177,8 @@ export interface UpdateProviderRequest {
   baseUrl?: string
   apiType?: 'openai' | 'anthropic'
   type?: string
+  /** CodeBuddy 区域(仅 type=codebuddy 使用)：cn 国内版 / global 国际版 */
+  region?: 'cn' | 'global'
   apiKeys?: Array<{ key: string; enabled: boolean }>
   models?: Array<{ id: string; enabled: boolean }> | string[]
   mirrorUrls?: string[] | string

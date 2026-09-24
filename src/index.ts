@@ -13,6 +13,9 @@ import {
   handleTestModel,
   handleTestKeyNew,
   handleTestModelNew,
+  handleSaveDsAccount,
+  handleDsLogin,
+  handleClearDsAccount,
   handleGetProxyKeys,
   handleCreateProxyKey,
   handleUpdateProxyKey,
@@ -32,8 +35,12 @@ import {
   handleOAuthComplete,
   handleOAuthPoll,
   handleOAuthModels,
+  handleCodebuddyStatus,
+  handleCodebuddyCheckin,
+  handleCronCheckin,
 } from './admin'
 import { renderHomePage, renderLoginPage, renderAdminPage } from './pages'
+import { probeDeepSeek, probeDeepSeekLogin } from './deepseek-auth-probe'
 import { seedInitialData, getSession } from './storage'
 import { ensureD1Tables, ensurePgTables } from './storage-adapter'
 import { handleBackupExport, handleBackupImport, handleBackupToR2, handleBackupList, handleBackupRestore, handleBackupDelete, handleTelegramTest, handleBackupToTelegram } from './backup'
@@ -96,6 +103,10 @@ app.post('/admin/api/providers', handleCreateProvider)
 app.put('/admin/api/providers/:id', handleUpdateProvider)
 app.delete('/admin/api/providers/:id', handleDeleteProvider)
 app.post('/admin/api/providers/:id/test-model', handleTestModel)
+// DeepSeek 账号托管（方案 B：网关代登录换 userToken）
+app.put('/admin/api/providers/:id/ds-account', handleSaveDsAccount)
+app.post('/admin/api/providers/:id/ds-login', handleDsLogin)
+app.delete('/admin/api/providers/:id/ds-account', handleClearDsAccount)
 app.post('/admin/api/test-key', handleTestKeyNew)
 app.post('/admin/api/test-model', handleTestModelNew)
 
@@ -128,6 +139,21 @@ app.post('/admin/api/oauth/:provider/complete', handleOAuthComplete)
 app.post('/admin/api/oauth/:provider/poll', handleOAuthPoll)
 app.post('/admin/api/oauth/:provider/models', handleOAuthModels)
 
+// CodeBuddy 账号状态（积分/套餐余额）
+app.post('/admin/api/codebuddy/status', handleCodebuddyStatus)
+
+// CodeBuddy 每日签到（单账号；body.all=true 时遍历全部 codebuddy 渠道，供定时任务）
+app.post('/admin/api/codebuddy/checkin', handleCodebuddyCheckin)
+
+// ===== 定时任务入口（不需要管理员会话）=====
+// 用由 ADMIN_PASSWORD 单向派生的专用令牌鉴权（X-Cron-Token 头 或 ?token=），权限最小化：
+// 只能触发签到，拿不到任何渠道配置。见 README「每日签到」。
+// 同时支持 GET/HEAD：外部存活监控（UptimeRobot / BetterStack 等）通常只能配一个 URL，
+// 让它顺手把签到也触发了，就不必额外维护一套定时器。内置当日节流，高频 ping 不会重复打上游。
+app.get('/cron/checkin', handleCronCheckin)
+app.on('HEAD', '/cron/checkin', handleCronCheckin)
+app.post('/cron/checkin', handleCronCheckin)
+
 // ===== 备份/恢复 =====
 app.get('/admin/api/backup/export', handleBackupExport)
 app.post('/admin/api/backup/import', handleBackupImport)
@@ -137,6 +163,33 @@ app.post('/admin/api/backup/restore', handleBackupRestore)
 app.post('/admin/api/backup/delete', handleBackupDelete)
 // Telegram 备份
 app.post('/admin/api/telegram/test', handleTelegramTest)
+
+// ===== DeepSeek 设备身份 / WAF 可达性探针（诊断用，判断「代登录」是否可行） =====
+// GET  只做本地派生 + 无副作用联网探测（不提交任何凭据）
+// POST 传 { email|mobile, password } 才会真实打一次 /users/login（有副作用，慎用）
+app.get('/admin/api/ds-probe', async (c) => {
+  try {
+    return c.json(await probeDeepSeek())
+  } catch (err) {
+    return c.json({ error: { message: (err as Error).message || '探针失败' } }, 500)
+  }
+})
+app.post('/admin/api/ds-probe/login', async (c) => {
+  const body: any = await c.req.json().catch(() => null)
+  if (!body?.password) {
+    return c.json({ error: { message: '需要 password；可选 email 或 mobile(+area_code)' } }, 400)
+  }
+  try {
+    return c.json(await probeDeepSeekLogin({
+      email: body.email,
+      mobile: body.mobile,
+      password: body.password,
+      areaCode: body.area_code,
+    }))
+  } catch (err) {
+    return c.json({ error: { message: (err as Error).message || '登录探测失败' } }, 500)
+  }
+})
 app.post('/admin/api/backup/to-telegram', handleBackupToTelegram)
 
 // ===== API 转发路由（需转发 Key 验证） =====

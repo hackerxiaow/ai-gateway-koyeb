@@ -28,6 +28,7 @@ export const KV_KEYS = {
   PROXY_KEYS: 'proxy:keys',
   SESSION_PREFIX: 'admin:session:',
   KEY_HEALTH_PREFIX: 'key:health:',
+  AG_HEALTH_PREFIX: 'ag:health:',
   OPENCODE_MIGRATION: 'migration:opencode-default:v1',
   USAGE_PREFIX: 'usage:req:',
 } as const

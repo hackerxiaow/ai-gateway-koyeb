@@ -1,0 +1,94 @@
+name: Daily CodeBuddy Check-in
+
+# Cloudflare Pages Functions 没有 cron 触发器，因此用 Actions 的 schedule
+# 定时调用网关的签到入口（无需另起 Worker）。
+#
+# 鉴权：`POST /cron/checkin` + `X-Cron-Token` 头。
+# 该令牌由网关用 ADMIN_PASSWORD 单向派生（HMAC-SHA256），**不是**管理员密码本身：
+#   - 泄露也无法反推管理员密码；
+#   - 权限最小化，只能触发签到，读不到任何渠道配置或 Key；
+#   - 因此可以安全地放进 public 仓库的 Secrets。
+# ⚠️ 若修改了网关的 ADMIN_PASSWORD，令牌会同步变化，需重新生成并更新下面的 Secret。
+#
+# 需要仓库 Secrets：CHECKIN_CRON_TOKEN
+#   生成方式（本地执行，把 <ADMIN_PASSWORD> 换成网关的管理员密码）：
+#     printf '%s' 'codebuddy-checkin-cron-v1' \
+#       | openssl dgst -sha256 -hmac '<ADMIN_PASSWORD>' -r | cut -d' ' -f1
+#
+# 💡 与外部存活监控的关系：`/cron/checkin` 也支持 GET，可以直接把 UptimeRobot 之类的
+#    监控 URL 指过来，让它顺带触发签到。接口有**当日节流**（KV `cron:checkin:state`）：
+#    当天已成功则跳过，失败则 30 分钟后才允许重试。所以本 workflow 与外部监控
+#    同时开着不会重复签到——后到的那次会拿到 `action: "skipped"`，此时直接跳过即可。
+#    如果只保留外部监控，可以把本文件的 schedule 注释掉（保留 workflow_dispatch 手动触发）。
+#
+# ⚠️ GitHub 定时任务的两点限制：
+#   1. 高峰期可能延迟几分钟到几十分钟执行；
+#   2. 仓库连续 60 天无提交活动时 schedule 会被自动停用（需手动重新启用）。
+# 也可以在 Actions 页面用「Run workflow」手动触发。
+
+on:
+  schedule:
+    # 每天 01:07 UTC = 09:07 北京时间（错开整点，避开定时任务高峰）
+    - cron: '7 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger check-in
+        env:
+          CHECKIN_CRON_TOKEN: ${{ secrets.CHECKIN_CRON_TOKEN }}
+          GATEWAY: https://api.seurl.eu.org
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CHECKIN_CRON_TOKEN:-}" ]; then
+            echo "::error::缺少 CHECKIN_CRON_TOKEN secret，无法触发签到"
+            exit 1
+          fi
+
+          code=$(curl -sS --max-time 180 -o /tmp/resp.json -w '%{http_code}' \
+            -X POST "$GATEWAY/cron/checkin" \
+            -H "X-Cron-Token: $CHECKIN_CRON_TOKEN")
+          resp=$(cat /tmp/resp.json)
+
+          echo "$resp" | jq -r '.message // .' 2>/dev/null || echo "$resp"
+
+          if [ "$code" != "200" ]; then
+            echo "::error::签到接口返回 HTTP $code（401=令牌无效，503=网关未配置 ADMIN_PASSWORD）"
+            exit 1
+          fi
+
+          action=$(echo "$resp" | jq -r '.data.action // "checkin"')
+          total=$(echo "$resp" | jq -r '.data.total // 0')
+          okc=$(echo "$resp" | jq -r '.data.ok // 0')
+          already=$(echo "$resp" | jq -r '.data.already // 0')
+          failed=$(echo "$resp" | jq -r '.data.failed // 0')
+
+          {
+            echo "### CodeBuddy 签到结果"
+            echo ""
+            echo "动作：\`$action\`"
+            echo ""
+            echo "| 账号数 | 新签到 | 已签到 | 失败 |"
+            echo "|---|---|---|---|"
+            echo "| $total | $okc | $already | $failed |"
+            echo ""
+            echo "$resp" | jq -r '.data.results[]? | "- `\(.providerName)` #\(.index) → \(if .ok then (if .already then "已签到" else "签到成功" end) else "失败" end)：\(.message // "")"'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # 已被外部监控（或更早的一次调用）在今天签过：无需重复处理，也不再重复报警
+          if [ "$action" = "skipped" ]; then
+            echo "今日已完成签到（当日节流跳过）：新签到 $okc、已签到 $already、失败 $failed"
+            exit 0
+          fi
+          if [ "$total" = "0" ]; then
+            echo "::warning::没有已配置的 CodeBuddy 渠道，本次跳过（后台添加渠道后即生效）"
+            exit 0
+          fi
+          if [ "$failed" != "0" ]; then
+            echo "::error::$failed 个账号签到失败，请登录后台查看"
+            exit 1
+          fi
+          echo "完成：新签到 $okc 个，已签到 $already 个"

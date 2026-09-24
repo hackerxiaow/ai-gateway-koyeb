@@ -371,6 +371,20 @@ label, legend { color: var(--color-ink-2); font-size: var(--text-xs); font-weigh
 .modal h3 { margin-block-end: var(--space-xs); font-size: var(--text-lg); }
 .modal p { margin-block-end: var(--space-sm); color: var(--color-muted); }
 .modal .fa { margin-block-start: var(--space-sm); display: flex; justify-content: flex-end; gap: var(--space-2xs); }
+/* DeepSeek 取 userToken 的分步引导（弹窗内） */
+.ds-steps { margin: 0 0 var(--space-sm); padding-inline-start: 1.25em; color: var(--color-ink-2); font-size: var(--text-sm); line-height: 1.7; }
+.ds-steps li { margin-block-end: var(--space-3xs); }
+.ds-steps a { color: var(--color-focus); text-decoration: underline; }
+.ds-steps code { padding: .1em .35em; border-radius: var(--radius-control); background: var(--color-paper-2); font-family: var(--font-mono); font-size: .92em; }
+.ds-steps kbd { padding: .1em .4em; border: .0625rem solid var(--color-rule-2); border-radius: var(--radius-control); background: var(--color-paper-2); font-family: var(--font-mono); font-size: .88em; }
+.ds-alt { margin-block-end: var(--space-2xs); border: .0625rem solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-2); }
+.ds-alt > summary { padding: var(--space-2xs) var(--space-xs); cursor: pointer; color: var(--color-muted); font-size: var(--text-xs); }
+.ds-alt > summary:hover { color: var(--color-ink-2); }
+.ds-alt > p { margin-inline: var(--space-xs); }
+.ds-code { display: block; margin: 0 var(--space-xs) var(--space-xs); padding: var(--space-2xs) var(--space-xs); border-radius: var(--radius-control); background: var(--color-paper); color: var(--color-ink); font-family: var(--font-mono); font-size: var(--text-xs); overflow-wrap: anywhere; user-select: all; }
+.ds-warn { margin-block-end: var(--space-xs); padding: var(--space-2xs) var(--space-xs); display: flex; gap: var(--space-2xs); align-items: flex-start; border: .0625rem solid var(--color-danger-soft); border-inline-start: .1875rem solid var(--color-danger); border-radius: var(--radius-control); background: var(--color-danger-soft); color: var(--color-danger-ink); font-size: var(--text-xs); line-height: 1.6; }
+.ds-warn i { margin-block-start: .15em; flex: 0 0 auto; }
+.ds-warn code { padding: .1em .35em; border-radius: var(--radius-control); background: var(--color-paper); font-family: var(--font-mono); }
 .mk { margin-block: var(--space-xs); padding: var(--space-sm); border: .0625rem solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-2); color: var(--color-ink); font-family: var(--font-mono); font-size: var(--text-xs); overflow-wrap: anywhere; user-select: all; }
 .mdl-item { min-width: 0; min-height: var(--control-h-sm); padding-inline: var(--space-2xs); display: flex; align-items: center; gap: var(--space-2xs); border: .0625rem solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper); color: var(--color-ink-2); font-size: var(--text-xs); }
 .mdl-item .fx1 { min-width: 0; white-space: normal; overflow-wrap: anywhere; }

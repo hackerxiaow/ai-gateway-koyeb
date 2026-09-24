@@ -28,6 +28,15 @@ import {
   defer,
 } from './oauth-common'
 import { solveAndBuildPowHeader, type DsPowChallenge } from './deepseek-pow'
+import {
+  injectTools,
+  parseToolCalls,
+  composeSystemSections,
+  formatResponseFormatText,
+  ToolCallDetector,
+  type DetectOut,
+  type ParsedToolCall,
+} from './deepseek-tools'
 import type { OpenAIUsage } from './responses-translate'
 
 const DS_BASE = 'https://chat.deepseek.com/api/v0'
@@ -61,8 +70,10 @@ function dsHeaders(userToken: string, powHeader?: string): Record<string, string
 // 消息 -> prompt（网页接口只接受单条 prompt）
 // =====================================================================
 
-function renderPrompt(messages: unknown): string {
-  if (!Array.isArray(messages) || messages.length === 0) return ''
+function renderPrompt(messages: unknown, extraSystem?: string): string {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return extraSystem ? `系统指令：${extraSystem}` : ''
+  }
   const text = (c: unknown): string => {
     if (typeof c === 'string') return c
     if (Array.isArray(c)) {
@@ -72,10 +83,12 @@ function renderPrompt(messages: unknown): string {
   }
   const users = messages.filter((m: any) => m?.role === 'user')
   const single = messages.length === 1 || (users.length === 1 && messages.every((m: any) => m?.role === 'user' || m?.role === 'system'))
-  if (single && users.length === 1 && !messages.some((m: any) => m?.role === 'system')) {
+  if (single && users.length === 1 && !messages.some((m: any) => m?.role === 'system') && !extraSystem) {
     return text(users[0].content)
   }
   const parts: string[] = []
+  // 工具定义/格式规范作为普通系统指令注入一次（照 ds-free-api：不用未闭合 <think> 那套）
+  if (extraSystem) parts.push(`系统指令：${extraSystem}`)
   for (const m of messages as any[]) {
     const body = text(m?.content)
     if (!body) continue
@@ -256,18 +269,24 @@ function createOpenAIStreamFromDeepSeek(
   upstream: ReadableStream<Uint8Array>,
   requestedModel: string,
   onUsage?: (usage: OpenAIUsage) => void,
+  useTools = false,
 ): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
   const parser = createSseParser()
   const state = new DeepSeekDeltaParser()
+  // 工具检测器：只在请求带 tools 时启用。开启后 content 增量要先过一遍标签检测，
+  // 避免把 `<|tool▁calls▁begin|>...` 这种控制标签泄漏给客户端。
+  const detector = useTools ? new ToolCallDetector() : null
   let firstSent = false
   let finished = false
   let promptTokens = 0
+  let toolCallIndex = 0
+  const chatcmplId = `chatcmpl-ds-${randomId()}`
 
   const send = (controller: ReadableStreamDefaultController<Uint8Array>, delta: Record<string, any>, finish: string | null = null, withUsage = false) => {
     const chunk: Record<string, any> = {
-      id: `chatcmpl-ds-${randomId()}`,
+      id: chatcmplId,
       object: 'chat.completion.chunk',
       created: Math.floor(Date.now() / 1000),
       model: requestedModel,
@@ -277,19 +296,53 @@ function createOpenAIStreamFromDeepSeek(
     controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
   }
 
+  /** 把检测器的输出落成 SSE：文本照常发，工具块解析成 tool_calls 分片 */
+  const emitDetect = (controller: ReadableStreamDefaultController<Uint8Array>, outs: DetectOut[]) => {
+    for (const o of outs) {
+      if (o.kind === 'content') {
+        if (o.text) send(controller, { content: o.text })
+        continue
+      }
+      // tool_block：解析 -> 逐条发 tool_calls 增量（OpenAI 流式要求先发 name，再分片发 arguments）
+      const { calls, failed } = parseToolCalls(o.raw)
+      if (failed.length) {
+        // 解析不出来的片段当普通文本吐出去，宁可让客户端看到原文，也不要静默吞掉
+        send(controller, { content: `\n[tool-call 解析失败] ${failed.join('\n')}\n` })
+      }
+      for (const call of calls) {
+        const idx = toolCallIndex++
+        send(controller, { tool_calls: [{ index: idx, id: call.id, type: 'function', function: { name: call.function.name, arguments: '' } }] })
+        // arguments 一次性发出（DeepSeek 侧没有真正的增量 arguments，协议上允许整段发）
+        send(controller, { tool_calls: [{ index: idx, function: { arguments: call.function.arguments } }] })
+      }
+      if (calls.length) {
+        send(controller, {}, 'tool_calls', true)
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        finished = true
+        if (onUsage) onUsage({ promptTokens, completionTokens: state.usageTokens })
+      }
+    }
+  }
+
   const handle = (controller: ReadableStreamDefaultController<Uint8Array>, ev: SseEvent) => {
     if (!ev.data || ev.data === '[DONE]') return
     let payload: any
     try { payload = JSON.parse(ev.data) } catch { return }
     const d = state.apply(ev.event, payload)
     if (d.reasoning) send(controller, { reasoning_content: d.reasoning })
-    if (d.content) send(controller, { content: d.content })
+    if (d.content) {
+      if (detector) emitDetect(controller, detector.push(d.content))
+      else send(controller, { content: d.content })
+    }
     if (d.error) {
       send(controller, { content: `[deepseek] ${d.error}` }, 'stop', true)
       controller.enqueue(encoder.encode('data: [DONE]\n\n'))
       finished = true
       if (onUsage) onUsage({ promptTokens, completionTokens: state.usageTokens })
     } else if (d.done && !finished) {
+      // 上游结束前先冲掉检测器缓冲（可能是未闭合的工具块，兜底当文本发）
+      if (detector && !detector.isDone) emitDetect(controller, detector.flush())
+      if (finished) return
       finished = true
       send(controller, {}, 'stop', true)
       controller.enqueue(encoder.encode('data: [DONE]\n\n'))
@@ -303,6 +356,7 @@ function createOpenAIStreamFromDeepSeek(
       const pump = () => {
         reader.read().then(({ done, value }) => {
           if (done) {
+            if (detector && !detector.isDone) emitDetect(controller, detector.flush())
             if (!firstSent) send(controller, { role: 'assistant', content: '' }, 'stop', true)
             else if (!finished) {
               send(controller, {}, 'stop', true)
@@ -324,30 +378,57 @@ function createOpenAIStreamFromDeepSeek(
 }
 
 /** 非流式：解析完整 SSE 文本，聚合成 OpenAI 响应 */
-function deepseekTextToOpenAI(text: string, requestedModel: string, promptTokens: number): { body: Record<string, any>; usage: OpenAIUsage } {
+function deepseekTextToOpenAI(text: string, requestedModel: string, promptTokens: number, useTools = false): { body: Record<string, any>; usage: OpenAIUsage } {
   const parser = createSseParser()
   const state = new DeepSeekDeltaParser()
+  const detector = useTools ? new ToolCallDetector() : null
   let content = ''
   let reasoning = ''
   let error = ''
+  const toolCalls: ParsedToolCall[] = []
+  const failedBlocks: string[] = []
+  let toolParsed = false
+
+  const collect = (raw: string) => {
+    const { calls, failed } = parseToolCalls(raw)
+    if (calls.length) { toolCalls.push(...calls); toolParsed = true }
+    failedBlocks.push(...failed)
+  }
+
   for (const ev of parser.feed(text)) {
     if (!ev.data || ev.data === '[DONE]') continue
     let payload: any
     try { payload = JSON.parse(ev.data) } catch { continue }
     const d = state.apply(ev.event, payload)
-    if (d.content) content += d.content
+    if (d.content) {
+      if (detector) {
+        for (const o of detector.push(d.content)) {
+          if (o.kind === 'content') content += o.text
+          else collect(o.raw)
+        }
+      } else content += d.content
+    }
     if (d.reasoning) reasoning += d.reasoning
     if (d.error) error = d.error
   }
+  if (detector && !detector.isDone) {
+    for (const o of detector.flush()) {
+      if (o.kind === 'content') content += o.text
+      else collect(o.raw)
+    }
+  }
+  if (failedBlocks.length) content += `\n[tool-call 解析失败] ${failedBlocks.join('\n')}\n`
+
   const message: Record<string, any> = { role: 'assistant', content: error ? `[deepseek] ${error}` : (content || null), refusal: null }
   if (reasoning) message.reasoning_content = reasoning
+  if (toolCalls.length) message.tool_calls = toolCalls
   return {
     body: {
       id: `chatcmpl-ds-${randomId()}`,
       object: 'chat.completion',
       created: Math.floor(Date.now() / 1000),
       model: requestedModel,
-      choices: [{ index: 0, message, finish_reason: error ? 'stop' : 'stop', logprobs: null }],
+      choices: [{ index: 0, message, finish_reason: toolParsed ? 'tool_calls' : 'stop', logprobs: null }],
       usage: { prompt_tokens: promptTokens, completion_tokens: state.usageTokens, total_tokens: promptTokens + state.usageTokens },
     },
     usage: { promptTokens, completionTokens: state.usageTokens },
@@ -462,11 +543,19 @@ export async function handleDeepSeekRequest(p: OAuthCallParams, _subPath: string
   const apiKey = tokens.find(isOfficialApiKey)
   if (apiKey) return handleOfficialApiRequest(p, apiKey.trim())
 
-  const prompt = renderPrompt(p.body?.messages)
+  // 工具调用：DeepSeek 网页接口不支持原生 function calling，
+  // 把 tools/tool_choice/response_format 降级成提示词注入一次（照 ds-free-api）。
+  const toolCtx = injectTools(p.body || {})
+  const extraSystem = composeSystemSections(toolCtx, formatResponseFormatText(p.body?.response_format))
+  const useTools = !!(toolCtx.defsText || toolCtx.formatBlock)
+
+  const prompt = renderPrompt(p.body?.messages, extraSystem)
   if (!prompt) return oauthErrorResponse('请求缺少可用内容（messages 为空）', 400, 'invalid_request_error')
   const wantStream = p.body?.stream === true
   const { modelType, thinking, search } = modelOptions(p.modelId)
   const promptTokens = Math.ceil(prompt.length / 4)
+  // 工具模式下强制开启思考：实测深度思考能显著提升标签遵循度、减少幻觉
+  const thinkingFinal = useTools ? true : thinking
   let lastError = ''
   let lastStatus = 502
 
@@ -488,7 +577,7 @@ export async function handleDeepSeekRequest(p: OAuthCallParams, _subPath: string
             model_type: modelType,
             prompt,
             ref_file_ids: [],
-            thinking_enabled: thinking,
+            thinking_enabled: thinkingFinal,
             search_enabled: search,
             preempt: false,
           }),
@@ -512,7 +601,7 @@ export async function handleDeepSeekRequest(p: OAuthCallParams, _subPath: string
       if (wantStream && upstream.body) {
         const stream = createOpenAIStreamFromDeepSeek(upstream.body, p.requestedModel, (usage) => {
           defer(p, recordOAuthUsage(p, usage, true, 200))
-        })
+        }, useTools)
         return new Response(stream, {
           status: 200,
           headers: { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive' },
@@ -523,7 +612,7 @@ export async function handleDeepSeekRequest(p: OAuthCallParams, _subPath: string
       if (/value="captcha"|__cf_chl|CloudFront|Request blocked/i.test(text.slice(0, 500))) {
         return oauthErrorResponse('上游返回拦截页面（WAF/风控）：当前 Worker 出口 IP 可能被 DeepSeek 拦截', 502, 'waf_blocked')
       }
-      const { body, usage } = deepseekTextToOpenAI(text, p.requestedModel, promptTokens)
+      const { body, usage } = deepseekTextToOpenAI(text, p.requestedModel, promptTokens, useTools)
       defer(p, recordOAuthUsage(p, usage, true, 200))
       return new Response(JSON.stringify(body), {
         status: 200,

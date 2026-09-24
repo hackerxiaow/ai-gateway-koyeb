@@ -11,7 +11,8 @@
  *     { model, project, userAgent, requestType, requestId, request:{...} }（并删除 request.safetySettings）
  *  4. 响应（同样是 { response: {...} } 包装）翻译回 OpenAI，含 SSE 流式
  *
- * 渠道 apiKeys 里每行一个 Google 账号的 Antigravity refresh_token。
+ * 渠道 apiKeys 里每行一个 Google 账号的 Antigravity refresh_token；需要给某个账号单独指定
+ * 项目 ID 时写成 `refresh_token|项目ID`（不写则用渠道级 project），见 parseAgAccount。
  */
 
 import type { Env, UsageRecord } from './types'
@@ -19,6 +20,9 @@ import { getKV } from './storage-adapter'
 import { resolveAccessToken } from './oauth-common'
 import { addUsageRecord } from './storage'
 import { openAIToGeminiRequest, geminiResponseToOpenAI, createOpenAIStream } from './gemini-translate'
+import { KV_KEYS } from './config'
+
+const AG_HEALTH_PREFIX = KV_KEYS.AG_HEALTH_PREFIX
 
 // ===== Antigravity OAuth 客户端（来自 CLIProxyAPI internal/auth/antigravity） =====
 // 凭据不入库: 通过 Worker 密钥注入, 先设置再部署
@@ -332,11 +336,27 @@ async function recordUsage(p: AntigravityCallParams, usage: AgUsage, ok: boolean
   await addUsageRecord(p.env, record).catch(() => {})
 }
 
+/** 解析渠道 apiKeys 里的一行账号：`refresh_token` 或 `refresh_token|project`。
+ *  Google 的 refresh_token 是 URL-safe 字符集、不含 `|`，故 `|` 作分隔符是安全的。
+ *  单独指定了 project 的账号优先用它，未指定的回落到渠道级 project。 */
+export function parseAgAccount(raw: string): { token: string; project?: string } {
+  const text = (raw || '').trim()
+  const sep = text.indexOf('|')
+  if (sep < 0) return { token: text }
+  const project = text.slice(sep + 1).trim()
+  return { token: text.slice(0, sep).trim(), project: project || undefined }
+}
+
 /** 随机打散账号顺序(负载均衡): 每个请求先用随机账号, 失败再依次尝试其余账号。
  *  避免所有请求都压在第一个账号上, 让多账号的免费额度均匀消耗。
  *  返回的 index 是账号在渠道配置里的原始序号(1 起), 用于 x-ag-account 观测头。 */
-function shuffleAccounts(list: string[]): Array<{ token: string; index: number }> {
-  const arr = list.map((token, i) => ({ token: token.trim(), index: i + 1 }))
+function shuffleAccounts(list: string[]): Array<{ token: string; project?: string; index: number }> {
+  const arr = list
+    .map((raw, i) => {
+      const { token, project } = parseAgAccount(raw)
+      return { token, project, index: i + 1 }
+    })
+    .filter((a) => a.token)
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1))
     const tmp = arr[i]
@@ -346,10 +366,134 @@ function shuffleAccounts(list: string[]): Array<{ token: string; index: number }
   return arr
 }
 
+// ===== 账号冷却：避免每个请求都在「已知没额度」的账号上白等 =====
+//
+// 背景：Google 按账号计配额，耗尽后该账号对任何请求都只会返 429。原先的纯随机顺序
+// 会让每个请求都先撞上这些账号，逐个重试几分钟量级的失败才轮到能用的账号 —— 实测一次
+// 请求仅响应头就要等 6~12 秒，客户端表现为「卡住/重连」。
+//
+// 做法：把「仍在冷却期」的账号排到队尾（不是剔除！）。健康账号之间照旧随机轮换，
+// 配额消耗依旧摊开；冷却账号在其余账号都失败时仍会被尝试，所以不会出现「本来能成功
+// 的请求因为跳过而失败」；冷却到期自动回到正常轮换池。冷却时长优先取上游报的重置时间。
+
+export type AgAccountHealth = {
+  /** 冷却截止时间戳(Date.now())，早于当前时间即视为已恢复 */
+  cooldownUntil: number
+  /** 最近一次被冷却的原因，便于排查 */
+  reason?: string
+}
+
+export type AgHealthMap = Record<string, AgAccountHealth>
+
+const AG_HEALTH_KEY = (providerId: string) => AG_HEALTH_PREFIX + providerId
+
+/** 配额耗尽但上游没给重置时间时的兜底冷却时长 */
+const AG_COOLDOWN_QUOTA_MS = 30 * 60 * 1000
+/** 凭据/权限问题（401/403）不会在几分钟内自愈 */
+const AG_COOLDOWN_AUTH_MS = 60 * 60 * 1000
+/** 5xx、网络错误等瞬时故障，短冷却即可 */
+const AG_COOLDOWN_TRANSIENT_MS = 5 * 60 * 1000
+
+async function readAgHealth(env: Env, providerId: string): Promise<AgHealthMap> {
+  try {
+    const raw = await getKV(env).get(AG_HEALTH_KEY(providerId))
+    return raw ? (JSON.parse(raw) as AgHealthMap) : {}
+  } catch {
+    return {}
+  }
+}
+
+async function writeAgHealth(env: Env, providerId: string, health: AgHealthMap): Promise<void> {
+  const now = Date.now()
+  // 只留仍在冷却中的账号，避免 KV 膨胀
+  const kept: AgHealthMap = {}
+  for (const [k, v] of Object.entries(health)) {
+    if (v && v.cooldownUntil > now) kept[k] = v
+  }
+  try {
+    if (Object.keys(kept).length > 0) {
+      await getKV(env).put(AG_HEALTH_KEY(providerId), JSON.stringify(kept))
+    } else {
+      await getKV(env).delete(AG_HEALTH_KEY(providerId))
+    }
+  } catch { /* 冷却状态写失败不影响本次转发 */ }
+}
+
+/** 从上游错误文本里解析重置倒计时，如 "Resets in 23h52m40s" / "Resets in 2h" / "Resets in 15m"。 */
+export function parseQuotaResetMs(text: string): number | null {
+  const m = /reset[s]?\s+in\s+(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?/i.exec(text || '')
+  if (!m) return null
+  const h = Number(m[1] || 0)
+  const mi = Number(m[2] || 0)
+  const s = Number(m[3] || 0)
+  const ms = ((h * 60 + mi) * 60 + s) * 1000
+  return ms > 0 ? ms : null
+}
+
+/**
+ * 按冷却状态重排账号：可用（洗牌）→ 冷却已到期（试用）→ 仍在冷却（队尾兜底）。
+ * 三组都会参与尝试，只改顺序，保证故障转移能力不下降。
+ */
+export function orderByCooldown<T extends { hash: string }>(accounts: T[], health: AgHealthMap): T[] {
+  const now = Date.now()
+  const healthy: T[] = []
+  const probation: T[] = []
+  const cooling: T[] = []
+  for (const a of accounts) {
+    const h = health[a.hash]
+    if (!h?.cooldownUntil) healthy.push(a)
+    else if (now >= h.cooldownUntil) probation.push(a)
+    else cooling.push(a)
+  }
+  const shuffle = (arr: T[]): void => {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      const tmp = arr[i]
+      arr[i] = arr[j]
+      arr[j] = tmp
+    }
+  }
+  shuffle(healthy)
+  shuffle(probation)
+  shuffle(cooling)
+  return [...healthy, ...probation, ...cooling]
+}
+
 export async function handleAntigravityRequest(p: AntigravityCallParams): Promise<Response> {
-  const accounts = shuffleAccounts((p.refreshTokens || []).filter((t) => t && t.trim()))
-  if (accounts.length === 0) {
-    return errorResponse('该 antigravity 渠道未配置凭据：请在「API Key」里每行填入一个 Google 账号的 Antigravity refresh_token（可点「用 Google 账号授权」获取）', 400, 'configuration_error')
+  const parsed = shuffleAccounts((p.refreshTokens || []).filter((t) => t && t.trim()))
+  if (parsed.length === 0) {
+    return errorResponse('该 antigravity 渠道未配置凭据：请在「API Key」里每行填入一个 Google 账号的 Antigravity refresh_token（可点「用 Google 账号授权」获取；需要给某个账号单独指定项目 ID 时写成 refresh_token|项目ID）', 400, 'configuration_error')
+  }
+  // 账号以 refresh_token 的 sha256 作为健康状态键，避免把凭据明文写进 KV
+  const accounts = await Promise.all(
+    parsed.map(async (a) => ({ ...a, hash: await sha256Hex(a.token) })),
+  )
+  const health = await readAgHealth(p.env, p.providerId)
+  const ordered = orderByCooldown(accounts, health)
+  let healthChanged = false
+  const coolingCount = ordered.filter((a) => {
+    const h = health[a.hash]
+    return !!h?.cooldownUntil && Date.now() < h.cooldownUntil
+  }).length
+  if (coolingCount > 0) {
+    console.log(`[antigravity] ${p.providerId}: ${coolingCount}/${ordered.length} account(s) in cooldown, tried last`)
+  }
+  /** 记录一次失败并写入冷却（成功则清除该账号的冷却） */
+  const markFailed = (hash: string, reason: string, cooldownMs: number): void => {
+    health[hash] = { cooldownUntil: Date.now() + cooldownMs, reason }
+    healthChanged = true
+  }
+  const markOk = (hash: string): void => {
+    if (health[hash]) {
+      delete health[hash]
+      healthChanged = true
+    }
+  }
+  const persistHealth = async (): Promise<void> => {
+    if (healthChanged) {
+      healthChanged = false
+      await writeAgHealth(p.env, p.providerId, health)
+    }
   }
   const wantStream = p.body?.stream === true
   const translateOpts = { modelId: p.modelId }
@@ -357,12 +501,13 @@ export async function handleAntigravityRequest(p: AntigravityCallParams): Promis
   let lastError = ''
   let lastStatus = 502
 
-  for (let i = 0; i < accounts.length; i++) {
-    const { token: refreshToken, index: accountIndex } = accounts[i]
+
+  for (let i = 0; i < ordered.length; i++) {
+    const { token: refreshToken, project: accountProject, index: accountIndex, hash } = ordered[i]
     try {
-      const hash = await sha256Hex(refreshToken)
       const accessToken = await getAccessToken(p.env, refreshToken)
-      const projectId = await resolveProjectId(p.env, accessToken, hash, p.project)
+      // 账号自己带的 project 优先，其次才是渠道级 project
+      const projectId = await resolveProjectId(p.env, accessToken, hash, accountProject || p.project)
       const envelope = buildEnvelope(p.modelId, projectId, geminiRequest)
       const url = `${AG_GEN_BASE}/${AG_API_VERSION}:${wantStream ? 'streamGenerateContent?alt=sse' : 'generateContent'}`
       const upstream = await fetch(url, {
@@ -374,10 +519,26 @@ export async function handleAntigravityRequest(p: AntigravityCallParams): Promis
 
       if (!upstream.ok) {
         lastStatus = upstream.status
-        lastError = `HTTP ${upstream.status}: ${(await readErrorBody(upstream)).slice(0, 300)}`
-        if ([401, 403, 429].includes(upstream.status) || upstream.status >= 500) continue
+        const detail = (await readErrorBody(upstream)).slice(0, 300)
+        lastError = `HTTP ${upstream.status}: ${detail}`
+        if ([401, 403, 429].includes(upstream.status) || upstream.status >= 500) {
+          // 429 通常是按账号的配额耗尽：冷却到上游给出的重置时间，别再让后续请求白撞
+          if (upstream.status === 429) {
+            const reset = parseQuotaResetMs(detail)
+            markFailed(hash, `429 ${detail.slice(0, 120)}`, reset ? reset + 60_000 : AG_COOLDOWN_QUOTA_MS)
+          } else if (upstream.status === 401 || upstream.status === 403) {
+            markFailed(hash, `${upstream.status} ${detail.slice(0, 120)}`, AG_COOLDOWN_AUTH_MS)
+          } else {
+            markFailed(hash, `${upstream.status} ${detail.slice(0, 120)}`, AG_COOLDOWN_TRANSIENT_MS)
+          }
+          continue
+        }
+        await persistHealth()
         return errorResponse(lastError, upstream.status, 'upstream_error')
       }
+
+      markOk(hash)
+      await persistHealth()
 
       if (wantStream && upstream.body) {
         const stream = createOpenAIStream(upstream.body, p.requestedModel, nameMap, () => {}, (finalUsage) => {
@@ -386,7 +547,7 @@ export async function handleAntigravityRequest(p: AntigravityCallParams): Promis
         }, translateOpts)
         return new Response(stream, {
           status: 200,
-          headers: { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'x-ag-account': String(accountIndex) },
+          headers: { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'x-ag-account': String(accountIndex), 'x-ag-cooldown': String(coolingCount) },
         })
       }
 
@@ -398,14 +559,16 @@ export async function handleAntigravityRequest(p: AntigravityCallParams): Promis
       await recordUsage(p, usage, true, 200)
       return new Response(JSON.stringify(openai), {
         status: 200,
-        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'x-ag-account': String(accountIndex) },
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'x-ag-account': String(accountIndex), 'x-ag-cooldown': String(coolingCount) },
       })
     } catch (err) {
       lastError = (err as Error).message || '未知错误'
       lastStatus = 502
+      markFailed(hash, `exception ${lastError.slice(0, 120)}`, AG_COOLDOWN_TRANSIENT_MS)
       continue
     }
   }
+  await persistHealth()
   return errorResponse(`所有 Antigravity 账号均失败，最后一次错误: ${lastError || '未知'}`, lastStatus, 'key_exhausted')
 }
 
@@ -430,9 +593,11 @@ export async function testAntigravity(
 ): Promise<{ success: boolean; message: string; statusCode?: number }> {
   if (!refreshToken) return { success: false, message: '未填写 refresh_token', statusCode: 0 }
   try {
-    const hash = await sha256Hex(refreshToken)
-    const accessToken = await getAccessToken(env, refreshToken)
-    const projectId = await resolveProjectId(env, accessToken, hash, project)
+    const { token, project: accountProject } = parseAgAccount(refreshToken)
+    if (!token) return { success: false, message: '未填写 refresh_token', statusCode: 0 }
+    const hash = await sha256Hex(token)
+    const accessToken = await getAccessToken(env, token)
+    const projectId = await resolveProjectId(env, accessToken, hash, accountProject || project)
     const { request: geminiRequest } = openAIToGeminiRequest({ messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 })
     const envelope = buildEnvelope(modelId, projectId, geminiRequest)
     const res = await fetch(`${AG_GEN_BASE}/${AG_API_VERSION}:generateContent`, {
@@ -476,7 +641,9 @@ export async function fetchAntigravityModels(
   refreshToken: string,
 ): Promise<{ success: boolean; models: string[]; message?: string; raw?: unknown }> {
   try {
-    const accessToken = await getAccessToken(env, refreshToken)
+    const { token } = parseAgAccount(refreshToken)
+    if (!token) return { success: false, models: [], message: '未填写 refresh_token' }
+    const accessToken = await getAccessToken(env, token)
     const res = await fetch(`${AG_GEN_BASE}/${AG_API_VERSION}:fetchAvailableModels`, {
       method: 'POST',
       headers: agHeaders(accessToken),
@@ -539,29 +706,91 @@ export interface AgQuotaAccount {
   index: number
   ok: boolean
   error?: string
-  /** 账号层级，如 "Gemini Code Assist" / "free-tier" */
+  /** 当前配置层（currentTier），如 "Antigravity"；免费账号一律是 free-tier */
   tier?: string
   tierId?: string
+  /** 订阅层（paidTier）—— Google 把套餐信息放在这里，与 currentTier 是两回事：
+   *  `g1-pro-tier` = Google AI Pro 已生效；`free-tier`/「Antigravity Starter Quota」= 没有套餐加成 */
+  paidTier?: string
+  paidTierId?: string
+  /** Google 关于该账号订阅/资格的原话（未生效时才有），tierNoteUrl 是它给的说明链接 */
+  tierNote?: string
+  tierNoteUrl?: string
+  /** 不具备某个层资格的原因（如 UNSUPPORTED_LOCATION = 所在地区不支持） */
+  ineligible?: string
+  /** 账号邮箱（读 userinfo 得到，用于确认这一行 token 属于哪个 Google 账号） */
+  email?: string
   project?: string
   models: AgQuotaModel[]
 }
 
-/** 查询渠道各账号的额度使用情况（多账号逐个查询，最多 5 个） */
+/** 从 loadCodeAssist 响应里提取层级/订阅/资格信息（纯函数，便于单测） */
+export function agTierInfo(load: any): {
+  tier?: string
+  tierId?: string
+  paidTier?: string
+  paidTierId?: string
+  tierNote?: string
+  tierNoteUrl?: string
+  ineligible?: string
+} {
+  const cur = load?.currentTier
+  const paid = load?.paidTier
+  const allowed: any[] = Array.isArray(load?.allowedTiers) ? load.allowedTiers : []
+  const fallback = allowed.find((t) => t?.isDefault) || allowed[0]
+  const inelig: any = Array.isArray(load?.ineligibleTiers) ? load.ineligibleTiers[0] : undefined
+  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined)
+
+  const tierId = str(cur?.id) || str(fallback?.id)
+  const paidTierId = str(paid?.id)
+  // paidTier 与当前层相同 = 没有生效的套餐加成，此时 Google 会给一句解释
+  const subscribed = !!paidTierId && paidTierId !== 'free-tier' && paidTierId !== tierId
+
+  return {
+    tier: str(cur?.name) || str(fallback?.name),
+    tierId,
+    paidTier: str(paid?.name),
+    paidTierId,
+    tierNote: subscribed ? undefined : str(paid?.upgradeSubscriptionText),
+    tierNoteUrl: subscribed ? undefined : str(paid?.upgradeSubscriptionUri),
+    ineligible: inelig ? `${str(inelig.reasonCode) || 'INELIGIBLE'}: ${str(inelig.reasonMessage) || ''}`.trim() : undefined,
+  }
+}
+
+/** 查询渠道各账号的额度使用情况（账号数不设上限，与后台面板列出的账号数一致）。
+ *  账号多时按 5 个一组并发，避免逐个串行把请求拖长。 */
 export async function fetchAntigravityQuota(
   env: Env,
   refreshTokens: string[],
   project?: string,
 ): Promise<AgQuotaAccount[]> {
-  const list = (refreshTokens || []).filter((t) => t && t.trim()).slice(0, 5)
-  const out: AgQuotaAccount[] = []
-  for (let i = 0; i < list.length; i++) {
-    const account: AgQuotaAccount = { index: i, ok: false, models: [] }
-    try {
-      const token = list[i].trim()
-      const accessToken = await getAccessToken(env, token)
-      const hash = await sha256Hex(token)
+  const entries = (refreshTokens || []).map((raw) => parseAgAccount(raw)).filter((e) => e.token)
+  // 层级/订阅/邮箱每个账号要额外两次上游调用；账号多时省掉它们（只少显示身份信息，不影响额度数据）
+  const withIdentity = entries.length <= 10
+  const out: AgQuotaAccount[] = new Array(entries.length)
+  const CHUNK = 5
+  for (let start = 0; start < entries.length; start += CHUNK) {
+    const group = entries.slice(start, start + CHUNK)
+    const results = await Promise.all(group.map((entry, k) => fetchOneAgQuota(env, entry, start + k, project, withIdentity)))
+    results.forEach((r, k) => { out[start + k] = r })
+  }
+  return out
+}
 
-      // 层级信息（best-effort，失败不影响配额查询）
+async function fetchOneAgQuota(
+  env: Env,
+  entry: { token: string; project?: string },
+  index: number,
+  channelProject: string | undefined,
+  withIdentity: boolean,
+): Promise<AgQuotaAccount> {
+  const account: AgQuotaAccount = { index, ok: false, models: [] }
+  try {
+    const accessToken = await getAccessToken(env, entry.token)
+    const hash = await sha256Hex(entry.token)
+
+    // 层级 / 订阅 / 资格（best-effort，失败不影响配额查询）
+    if (withIdentity) {
       try {
         const loadRes = await fetch(`${AG_PROD_BASE}/${AG_API_VERSION}:loadCodeAssist`, {
           method: 'POST',
@@ -570,43 +799,53 @@ export async function fetchAntigravityQuota(
           signal: AbortSignal.timeout(30000),
         })
         if (loadRes.ok) {
-          const load: any = await loadRes.json().catch(() => null)
-          account.tier = load?.currentTier?.name || (Array.isArray(load?.allowedTiers) ? load.allowedTiers[0]?.name : undefined)
-          account.tierId = load?.currentTier?.id || (Array.isArray(load?.allowedTiers) ? load.allowedTiers[0]?.id : undefined)
+          Object.assign(account, agTierInfo(await loadRes.json().catch(() => null)))
         }
       } catch { /* 忽略 */ }
 
-      account.project = await resolveProjectId(env, accessToken, hash, project).catch(() => undefined)
-
-      const res = await fetch(`${AG_GEN_BASE}/${AG_API_VERSION}:fetchAvailableModels`, {
-        method: 'POST',
-        headers: agHeaders(accessToken),
-        body: '{}',
-        signal: AbortSignal.timeout(30000),
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 150)}`)
-      const json: any = JSON.parse(await res.text())
-      const modelsObj = json?.models
-      if (modelsObj && typeof modelsObj === 'object' && !Array.isArray(modelsObj)) {
-        for (const [id, m] of Object.entries<any>(modelsObj)) {
-          if (/^(chat_|tab_)/i.test(id)) continue
-          const qi = m?.quotaInfo || {}
-          account.models.push({
-            id,
-            name: typeof m?.displayName === 'string' ? m.displayName : undefined,
-            remaining: typeof qi.remainingFraction === 'number' ? qi.remainingFraction : null,
-            resetTime: typeof qi.resetTime === 'string' ? qi.resetTime : undefined,
-            recommended: !!m?.recommended,
-            supportsThinking: !!m?.supportsThinking,
-          })
+      // 邮箱：用于确认这一行 token 是哪个 Google 账号（Antigravity 授权带 userinfo.email scope）
+      try {
+        const ui = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+          headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+          signal: AbortSignal.timeout(15000),
+        })
+        if (ui.ok) {
+          const info: any = await ui.json().catch(() => null)
+          if (typeof info?.email === 'string' && info.email.trim()) account.email = info.email.trim()
         }
-        account.models.sort((a, b) => a.id.localeCompare(b.id))
-      }
-      account.ok = true
-    } catch (err) {
-      account.error = (err as Error).message || '查询失败'
+      } catch { /* 忽略 */ }
     }
-    out.push(account)
+
+    // 账号自带的 project 优先，其次才是渠道级 project
+    account.project = await resolveProjectId(env, accessToken, hash, entry.project || channelProject).catch(() => undefined)
+
+    const res = await fetch(`${AG_GEN_BASE}/${AG_API_VERSION}:fetchAvailableModels`, {
+      method: 'POST',
+      headers: agHeaders(accessToken),
+      body: '{}',
+      signal: AbortSignal.timeout(30000),
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 150)}`)
+    const json: any = JSON.parse(await res.text())
+    const modelsObj = json?.models
+    if (modelsObj && typeof modelsObj === 'object' && !Array.isArray(modelsObj)) {
+      for (const [id, m] of Object.entries<any>(modelsObj)) {
+        if (/^(chat_|tab_)/i.test(id)) continue
+        const qi = m?.quotaInfo || {}
+        account.models.push({
+          id,
+          name: typeof m?.displayName === 'string' ? m.displayName : undefined,
+          remaining: typeof qi.remainingFraction === 'number' ? qi.remainingFraction : null,
+          resetTime: typeof qi.resetTime === 'string' ? qi.resetTime : undefined,
+          recommended: !!m?.recommended,
+          supportsThinking: !!m?.supportsThinking,
+        })
+      }
+      account.models.sort((a, b) => a.id.localeCompare(b.id))
+    }
+    account.ok = true
+  } catch (err) {
+    account.error = (err as Error).message || '查询失败'
   }
-  return out
+  return account
 }
