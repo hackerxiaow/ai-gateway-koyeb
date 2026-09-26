@@ -40,6 +40,9 @@ import {
   startCodebuddyDeviceFlow, pollCodebuddyDeviceFlow, testCodebuddy, fetchCodebuddyModels, fetchCodebuddyStatus,
   checkinCodebuddy, codebuddyCronToken,
 } from './codebuddy'
+import {
+  startClineDeviceFlow, pollClineDeviceFlow, testCline, fetchClineModels, fetchClineKeyQuota,
+} from './cline'
 import { fetchZaiModels } from './zai'
 import { fetchOpenCodeModels, isOpenCodeProvider, resolveOpenCodeUrls, resolveProviderMirrorUrls, testOpenCodeModel } from './opencode'
 import { PROXY_KEY_PREFIX, EXPIRY_OPTIONS, OPENCODE_DEFAULT_URL } from './config'
@@ -441,7 +444,7 @@ export async function handleTestModel(c: Context<{ Bindings: Env }>) {
     ? await testOpenCodeModel(provider.baseUrl, enabledKeys, modelId, resolveProviderMirrorUrls(c.env, provider))
     : ptype === 'antigravity'
       ? await testAntigravityRotating(c.env, enabledKeys.map(k => k.key), modelId, provider.project)
-      : ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek', 'codebuddy'].includes(ptype)
+      : ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek', 'codebuddy', 'cline'].includes(ptype)
         ? await testOAuthProviderRotating(c.env, ptype, enabledKeys.map(k => k.key), modelId, provider.baseUrl, provider.id, provider.region)
         : await testModelConnectionRotating(provider.baseUrl, enabledKeys.map(k => k.key), modelId, provider.apiType)
 
@@ -486,7 +489,7 @@ export async function handleTestKeyNew(c: Context<{ Bindings: Env }>) {
   }
 
   // OAuth 反代渠道: apiKey 即 refresh_token
-  if (providerType && ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek', 'codebuddy'].includes(providerType)) {
+  if (providerType && ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek', 'codebuddy', 'cline'].includes(providerType)) {
     const r = await testOAuthProvider(c.env, providerType, apiKey, model || OAUTH_DEFAULT_MODELS[providerType], url, providerId)
     return c.json<ApiResponse>({
       success: true,
@@ -601,7 +604,7 @@ export async function handleTestModelNew(c: Context<{ Bindings: Env }>) {
   }
 
   // OAuth 反代渠道: apiKey 即 refresh_token
-  if (providerType && ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek', 'codebuddy'].includes(providerType)) {
+  if (providerType && ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek', 'codebuddy', 'cline'].includes(providerType)) {
     const r = await testOAuthProvider(c.env, providerType, apiKey, model, url, providerId)
     return c.json<ApiResponse>({
       success: true,
@@ -756,7 +759,7 @@ export async function handleAntigravityQuotaAll(c: Context<{ Bindings: Env }>) {
 
 // ===== OAuth 反代渠道内置授权（claude / codex / kimi / grok） =====
 
-const OAUTH_PROVIDERS = new Set(['claude', 'codex', 'kimi', 'grok', 'qwen', 'codebuddy'])
+const OAUTH_PROVIDERS = new Set(['claude', 'codex', 'kimi', 'grok', 'qwen', 'codebuddy', 'cline'])
 // 无 OAuth 流程、凭据需从浏览器复制的渠道类型（deepseek 网页版 userToken）
 const MANUAL_TOKEN_PROVIDERS = new Set(['deepseek'])
 
@@ -769,6 +772,7 @@ const OAUTH_DEFAULT_MODELS: Record<string, string> = {
   qwen: 'coder-model',
   deepseek: 'deepseek-v4-flash',
   codebuddy: 'deepseek-v4.1-flash',
+  cline: 'cline-free/deepseek-v4.1-flash',
 }
 
 interface OAuthPollResult {
@@ -805,7 +809,9 @@ export async function handleOAuthStart(c: Context<{ Bindings: Env }>) {
       ? await startKimiDeviceFlow(c.env, body.baseUrl)
       : provider === 'qwen'
         ? await startQwenDeviceFlow(c.env)
-        : await startGrokDeviceFlow(c.env)
+        : provider === 'cline'
+          ? await startClineDeviceFlow(c.env)
+          : await startGrokDeviceFlow(c.env)
     return c.json<ApiResponse<{ mode: 'device'; state: string; verification_uri: string; verification_uri_complete?: string; user_code: string; interval: number }>>({
       success: true,
       data: { mode: 'device', state: flow.state, verification_uri: flow.verificationUri, verification_uri_complete: flow.verificationUriComplete, user_code: flow.userCode, interval: flow.interval },
@@ -850,6 +856,7 @@ export async function handleOAuthPoll(c: Context<{ Bindings: Env }>) {
     else if (provider === 'qwen') r = await pollQwenDeviceFlow(c.env, state)
     else if (provider === 'grok') r = await pollGrokDeviceFlow(c.env, state)
     else if (provider === 'codebuddy') r = await pollCodebuddyDeviceFlow(c.env, state)
+    else if (provider === 'cline') r = await pollClineDeviceFlow(c.env, state)
     if (!r) {
       return c.json<ApiResponse>({ success: false, message: `${provider} 渠道使用授权链接，请用 complete 接口` }, 400)
     }
@@ -890,6 +897,11 @@ export async function handleOAuthModels(c: Context<{ Bindings: Env }>) {
     const r = await fetchCodebuddyModels(c.env, apiKey, baseUrl, region)
     return c.json<ApiResponse<{ models: string[]; message?: string }>>({ success: r.success, data: { models: r.models, message: r.message }, message: r.message })
   }
+  if (provider === 'cline') {
+    // 上游无公开 /models，返回内置免费通道清单
+    const r = fetchClineModels()
+    return c.json<ApiResponse<{ models: string[] }>>({ success: true, data: { models: r.models } })
+  }
   return c.json<ApiResponse>({ success: false, message: `${provider} 渠道请手动填写模型列表` }, 400)
 }
 
@@ -910,6 +922,7 @@ async function testOAuthProvider(
   if (provider === 'qwen') return testQwen(env, refreshToken, modelId)
   if (provider === 'deepseek') return testDeepSeek(env, refreshToken, modelId)
   if (provider === 'codebuddy') return testCodebuddy(env, refreshToken, modelId, baseUrl, region)
+  if (provider === 'cline') return testCline(env, refreshToken, modelId)
   return { success: false, message: `未知 OAuth 渠道类型: ${provider}` }
 }
 
@@ -941,6 +954,19 @@ async function testOAuthProviderRotating(
     break
   }
   return last
+}
+
+// ===== Cline 额度页（账号余额 + 各模型今日用量/冷却状态） =====
+
+/** 查询全部 cline 渠道各凭据的账号余额、各模型今日用量与冷却状态（额度页「查询 Cline 账号」数据源） */
+export async function handleClineQuota(c: Context<{ Bindings: Env }>) {
+  const providers = (await getProviders(c.env)).filter((p) => p.type === 'cline')
+  const channels = await Promise.all(providers.map(async (p) => {
+    const keys = p.apiKeys.filter((k) => k.enabled).map((k) => k.key)
+    const accounts = await Promise.all(keys.map((k) => fetchClineKeyQuota(c.env, k)))
+    return { id: p.id, name: p.name, accounts }
+  }))
+  return c.json<ApiResponse<{ channels: typeof channels }>>({ success: true, data: { channels } })
 }
 
 // ===== CodeBuddy 账号状态（积分/套餐余额） =====

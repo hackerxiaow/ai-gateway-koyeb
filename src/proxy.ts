@@ -489,11 +489,11 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
     }
 
     // ===== OAuth 反代渠道 (type = claude / codex / kimi / grok / qwen / deepseek / codebuddy) =====
-    const OAUTH_TYPES = ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek', 'codebuddy']
+    const OAUTH_TYPES = ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek', 'codebuddy', 'cline']
     if (OAUTH_TYPES.includes(providerType)) {
       const supported = providerType === 'claude'
         ? ['chat/completions', 'messages']
-        : providerType === 'kimi' || providerType === 'qwen' || providerType === 'deepseek' || providerType === 'codebuddy'
+        : providerType === 'kimi' || providerType === 'qwen' || providerType === 'deepseek' || providerType === 'codebuddy' || providerType === 'cline'
           ? ['chat/completions']
           : ['chat/completions', 'responses']
       if (!supported.includes(subPath)) {
@@ -541,6 +541,11 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
         // CodeBuddy(腾讯) 反代：上游强制 stream，非流式由网关本地聚合；region 决定国内版/国际版
         const { handleCodebuddyRequest } = await import('./codebuddy')
         return handleCodebuddyRequest(oauthParams, provider.baseUrl, provider.region)
+      }
+      if (providerType === 'cline') {
+        // Cline(cline.bot) 反代：免费通道强制 stream + 剥 max_tokens，多账号随机均衡 + 按「账号×模型」冷却轮换
+        const { handleClineRequest } = await import('./cline')
+        return handleClineRequest(oauthParams)
       }
       const { handleGrokRequest } = await import('./grok')
       return handleGrokRequest({ ...oauthParams, body: subPath === 'responses' ? nativeBody : (body as Record<string, any>) }, subPath === 'responses' ? 'responses-passthrough' : 'translate')
