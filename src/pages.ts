@@ -5,14 +5,11 @@ import { SITE_CONFIG, OPENCODE_DEFAULT_URL } from './config'
 import type { Env } from './types'
 import { CSS_CONTENT } from './pages.css'
 import { SHARED_JS, renderSiteFooter } from './shared.js'
+import { getExternalOrigin } from './request-utils'
 
-// 检测运行平台 + 存储类型, 返回如 "Pages · D1"
-function getPlatformLabel(env: any, host?: string): string {
-  // 运行平台: 当前项目已适配 Cloudflare Pages 架构，除非明确来自 workers.dev 域名，否则均标识为 Pages
-  const isWorker = typeof host === 'string' && host.includes('workers.dev')
-  const platform = isWorker ? 'Workers' : 'Pages'
-  const storage = env?.DB ? 'D1' : env?.KV ? 'KV' : 'Memory'
-  return `${platform} · ${storage}`
+// 检测运行平台 + 存储类型
+function getPlatformLabel(_env: any, _host?: string): string {
+  return 'Koyeb · PostgreSQL'
 }
 import { storageTypeLabel } from './storage-adapter'
 import { AZURE_TTS_VOICES, voiceGroup } from './azure-voices'
@@ -74,8 +71,7 @@ const H = (title: string) => `
 
 export async function renderHomePage(c: Context<{ Bindings: Env }>, isLoggedIn: boolean) {
   const providers = await getProviders(c.env)
-  const host = c.req.header('host') || 'localhost:8787'
-  const apiBase = `https://${host}/v1`
+  const apiBase = `${getExternalOrigin(c)}/v1`
   const enabledProviders = providers.filter((provider) => provider.enabled)
   const allModelsCount = providers.reduce((total, provider) => total + provider.models.length, 0)
   const enabledModelsCount = enabledProviders.reduce((total, provider) => total + provider.models.filter((model) => model.enabled).length, 0)

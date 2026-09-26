@@ -4,7 +4,7 @@ export function renderSiteFooter(title: string, platform?: string): string {
   return `<footer class="site-footer">
   <div class="shell site-footer__inner">
     <span>© ${new Date().getFullYear()} <a class="site-footer__link" href="${SITE_REPO_URL}" target="_blank" rel="noreferrer">${title}</a></span>
-    <span>${platform || 'Pages · D1'}</span>
+    <span>${platform || 'Koyeb · PostgreSQL'}</span>
   </div>
 </footer>`
 }

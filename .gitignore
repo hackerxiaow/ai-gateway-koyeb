@@ -8,3 +8,9 @@ dist/
 !.env.example
 wrangler.toml
 .dev.vars
+
+# Tencent Cloud EdgeOne
+.env
+.edgeone/*
+.tef_dist/*
+  

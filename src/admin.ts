@@ -13,6 +13,7 @@ import {
   getAdminCredentials,
 } from './storage'
 import { getKV } from './storage-adapter'
+import { getExternalOrigin } from './request-utils'
 import { testModelConnectionRotating } from './proxy'
 import { testAntigravity, testAntigravityRotating, buildAntigravityAuthUrl, exchangeAntigravityCode, fetchAntigravityModels, fetchAntigravityQuota } from './antigravity'
 import {
@@ -134,7 +135,7 @@ export async function handleStatus(c: Context<{ Bindings: Env }>) {
       enabledModelsCount: enabledModels,
       proxyKeysCount: proxyKeys.filter((k) => k.enabled).length,
       adminConfigured: !!(c.env.ADMIN_USERNAME && c.env.ADMIN_PASSWORD) || (await getAdminCredentials(c.env)) !== null,
-      baseUrl: new URL(c.req.url).origin,
+      baseUrl: getExternalOrigin(c),
     },
   })
 }
