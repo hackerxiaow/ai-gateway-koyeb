@@ -46,6 +46,7 @@ import {
 import { fetchZaiModels } from './zai'
 import { fetchOpenCodeModels, isOpenCodeProvider, resolveOpenCodeUrls, resolveProviderMirrorUrls, testOpenCodeModel } from './opencode'
 import { PROXY_KEY_PREFIX, EXPIRY_OPTIONS, OPENCODE_DEFAULT_URL } from './config'
+import { AZURE_TTS_VOICES } from './azure-voices'
 import type {
   Env,
   ApiResponse,
@@ -92,17 +93,16 @@ function normalizeRegion(value: unknown): 'cn' | 'global' | undefined {
   return value === 'cn' || value === 'global' ? value : undefined
 }
 
-/** 从模型真实 id 生成对外 alias：去掉 :free、/free 或 -free 后缀 */
+/** 从模型真实 id 生成对外 alias：去掉 :free、/free、-free、_free 等后缀 */
 export function defaultModelAlias(id: string): string {
   return id
-    .replace(/:(free)$/i, '')
-    .replace(/\/(free)$/i, '')
-    .replace(/-(free)$/i, '')
+    .replace(/[:\/_-]free$/i, '')
+    .replace(/:free(?=[:\/_-]|$)/gi, '')
 }
 
 /**
  * 规范化模型列表。接受 string[] 或 {id, alias?, enabled?}[]。
- * alias 未提供时自动生成（去掉 :free//free 后缀）。
+ * 别名未提供或仍带免费后缀时，自动去除 :free/-free/_free//free 后缀。
  */
 function normalizeModels(value: unknown): Model[] {
   if (!Array.isArray(value)) return []
@@ -112,11 +112,14 @@ function normalizeModels(value: unknown): Model[] {
   }
   return (value as Array<{ id?: string; alias?: string; enabled?: boolean }>)
     .filter((m) => m && m.id)
-    .map((m) => ({
-      id: m.id!,
-      enabled: m.enabled !== undefined ? m.enabled : true,
-      alias: m.alias !== undefined && m.alias !== '' ? m.alias : defaultModelAlias(m.id!),
-    }))
+    .map((m) => {
+      const alias = m.alias !== undefined && m.alias !== '' ? m.alias.trim() : defaultModelAlias(m.id!)
+      return {
+        id: m.id!,
+        enabled: m.enabled !== undefined ? m.enabled : true,
+        alias: defaultModelAlias(alias),
+      }
+    })
 }
 
 export async function handleStatus(c: Context<{ Bindings: Env }>) {
@@ -351,6 +354,7 @@ apiKeys: normalizeArray(body.apiKeys, (k) => ({ key: k, enabled: true })),
     volume: body.volume,
     pitch: body.pitch,
     enabled: body.enabled !== undefined ? body.enabled : true,
+    autoSyncModels: body.autoSyncModels !== undefined ? Boolean(body.autoSyncModels) : false,
     createdAt: now,
     updatedAt: now,
   }
@@ -380,6 +384,7 @@ export async function handleUpdateProvider(c: Context<{ Bindings: Env }>) {
 if (body.apiKeys !== undefined) {
     updates.apiKeys = normalizeArray(body.apiKeys, (k) => ({ key: k, enabled: true }))
   }
+  if (body.autoSyncModels !== undefined) updates.autoSyncModels = Boolean(body.autoSyncModels)
   if (body.enabled !== undefined) updates.enabled = body.enabled
   if (body.models !== undefined) {
     updates.models = normalizeModels(body.models)
@@ -1213,6 +1218,257 @@ export async function handleCodebuddyCheckin(c: Context<{ Bindings: Env }>) {
   }
   const r = await checkinCodebuddy(c.env, refreshToken, baseUrl, region)
   return c.json<ApiResponse<typeof r>>({ success: r.ok, data: r, message: r.message })
+}
+
+// ===== 模型自动同步 (单渠道 / 全渠道一键 / 每日定时) =====
+
+const CRON_MODELS_STATE_KEY = 'cron:models:state'
+
+interface ModelsCronState {
+  date: string
+  at: string
+  totalChannels: number
+  syncedChannels: number
+  newModelsAdded: number
+}
+
+/**
+ * 内部实现：针对单个渠道执行最新模型拉取、去 free 别名处理与增量合并落库
+ */
+export async function syncProviderModelsInternal(
+  env: Env,
+  provider: Provider,
+  freeOnly = false,
+): Promise<{
+  success: boolean
+  providerId: string
+  newModels: string[]
+  totalModels: number
+  message?: string
+}> {
+  const type = provider.type || 'openai'
+  // 部分无法通过 API 获取模型的渠道智能跳过（保持手动配置）
+  const manualOnlyTypes = ['codex', 'grok', 'deepseek', 'devin', 'vertex']
+  if (manualOnlyTypes.includes(type)) {
+    return {
+      success: false,
+      providerId: provider.id,
+      newModels: [],
+      totalModels: provider.models.length,
+      message: `渠道类型 "${type}" 不支持在线自动拉取模型，已跳过`,
+    }
+  }
+
+  const activeKeys = (provider.apiKeys || []).filter((k) => k.enabled && k.key && k.key.trim())
+  const firstKey = activeKeys.length > 0 ? activeKeys[0].key : ''
+
+  let fetchedModelIds: string[] = []
+
+  try {
+    if (type === 'azure-tts') {
+      fetchedModelIds = AZURE_TTS_VOICES.map((v) => v.id)
+    } else if (type === 'antigravity') {
+      if (!firstKey) {
+        return { success: false, providerId: provider.id, newModels: [], totalModels: provider.models.length, message: '缺少可用 refresh_token' }
+      }
+      const r = await fetchAntigravityModels(env, firstKey)
+      if (!r.success || !r.models || r.models.length === 0) {
+        return { success: false, providerId: provider.id, newModels: [], totalModels: provider.models.length, message: r.message || '获取 Antigravity 模型失败' }
+      }
+      fetchedModelIds = r.models
+    } else if (type === 'zai') {
+      const models = fetchZaiModels().models
+      fetchedModelIds = freeOnly ? models.filter((m) => /flash|air/i.test(m)) : models
+    } else if (type === 'claude') {
+      if (!firstKey) return { success: false, providerId: provider.id, newModels: [], totalModels: provider.models.length, message: '缺少可用 refresh_token' }
+      const r = await fetchClaudeModels(env, firstKey)
+      if (!r.success || !r.models || r.models.length === 0) return { success: false, providerId: provider.id, newModels: [], totalModels: provider.models.length, message: r.message || '获取 Claude 模型失败' }
+      fetchedModelIds = r.models
+    } else if (type === 'kimi') {
+      if (!firstKey) return { success: false, providerId: provider.id, newModels: [], totalModels: provider.models.length, message: '缺少可用 refresh_token' }
+      const r = await fetchKimiModels(env, firstKey, provider.baseUrl)
+      if (!r.success || !r.models || r.models.length === 0) return { success: false, providerId: provider.id, newModels: [], totalModels: provider.models.length, message: r.message || '获取 Kimi 模型失败' }
+      fetchedModelIds = r.models
+    } else if (type === 'codebuddy') {
+      if (!firstKey) return { success: false, providerId: provider.id, newModels: [], totalModels: provider.models.length, message: '缺少可用 refresh_token' }
+      const r = await fetchCodebuddyModels(env, firstKey, provider.baseUrl, provider.region)
+      if (!r.success || !r.models || r.models.length === 0) return { success: false, providerId: provider.id, newModels: [], totalModels: provider.models.length, message: r.message || '获取 CodeBuddy 模型失败' }
+      fetchedModelIds = r.models
+    } else if (type === 'cline') {
+      fetchedModelIds = fetchClineModels().models
+    } else if (type === 'qwen') {
+      fetchedModelIds = fetchQwenModels().models
+    } else {
+      // 标准 OpenAI / Anthropic 兼容渠道
+      if (!provider.baseUrl) {
+        return { success: false, providerId: provider.id, newModels: [], totalModels: provider.models.length, message: '缺少 API 地址' }
+      }
+      const apiType = provider.apiType || 'openai'
+      const headers = buildAuthHeaders(firstKey, apiType)
+      const cleanBase = provider.baseUrl.replace(/\/$/, '')
+      let url = cleanBase + (apiType === 'anthropic' ? '/v1/models' : '/models')
+      let res = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(15000) })
+      if (!res.ok && res.status === 404 && !url.includes('/v1/')) {
+        url = cleanBase + '/v1/models'
+        res = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(15000) })
+      }
+      if (!res.ok) {
+        return { success: false, providerId: provider.id, newModels: [], totalModels: provider.models.length, message: `上游返回 HTTP ${res.status}` }
+      }
+      const data: any = await res.json().catch(() => null)
+      const rawList = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : [])
+      const filtered = freeOnly ? ((filterFreeModels({ data: rawList }) as any)?.data || []) : rawList
+      fetchedModelIds = filtered.map((m: any) => String(m.id || m.name || '')).filter(Boolean)
+    }
+  } catch (err) {
+    return { success: false, providerId: provider.id, newModels: [], totalModels: provider.models.length, message: (err as Error).message || '网络连接失败' }
+  }
+
+  if (fetchedModelIds.length === 0) {
+    return { success: true, providerId: provider.id, newModels: [], totalModels: provider.models.length, message: '未检测到新模型' }
+  }
+
+  // 智能增量合并：保留用户原有启停开关与自定义 alias，新模型自动去 -free 别名并默认启用
+  const existingMap = new Map<string, Model>()
+  for (const m of provider.models) {
+    existingMap.set(m.id, m)
+  }
+
+  const newAdded: string[] = []
+  const mergedModels: Model[] = [...provider.models]
+
+  for (const mid of fetchedModelIds) {
+    if (!existingMap.has(mid)) {
+      const newModel: Model = {
+        id: mid,
+        enabled: true,
+        alias: defaultModelAlias(mid),
+      }
+      existingMap.set(mid, newModel)
+      mergedModels.push(newModel)
+      newAdded.push(mid)
+    }
+  }
+
+  if (newAdded.length > 0) {
+    await updateProvider(env, provider.id, { models: mergedModels })
+  }
+
+  return {
+    success: true,
+    providerId: provider.id,
+    newModels: newAdded,
+    totalModels: mergedModels.length,
+    message: newAdded.length > 0 ? `新增 ${newAdded.length} 个模型` : '模型列表已是最新，无新增项',
+  }
+}
+
+/** 单渠道模型自动更新接口（管理员调用） */
+export async function handleSyncProviderModels(c: Context<{ Bindings: Env }>) {
+  const id = c.req.param('id')
+  if (!id) return c.json<ApiResponse>({ success: false, message: '缺少渠道 id' }, 400)
+  const provider = await getProvider(c.env, id)
+  if (!provider) return c.json<ApiResponse>({ success: false, message: '渠道不存在' }, 404)
+
+  const body = await c.req.json<{ freeOnly?: boolean }>().catch(() => ({} as { freeOnly?: boolean }))
+  const res = await syncProviderModelsInternal(c.env, provider, body.freeOnly || false)
+  return c.json<ApiResponse<typeof res>>({ success: res.success, data: res, message: res.message })
+}
+
+/** 一键全渠道模型自动同步接口（管理员调用，仅同步开启了 autoSyncModels 的渠道） */
+export async function handleSyncAllModels(c: Context<{ Bindings: Env }>) {
+  const body = await c.req.json<{ channelIds?: string[]; freeOnly?: boolean }>().catch(() => ({} as { channelIds?: string[]; freeOnly?: boolean }))
+  const providers = await getProviders(c.env)
+
+  // 目标渠道：显式指定优先；未指定时严格仅同步开启了 autoSyncModels 且处于启用状态的渠道
+  const targets = body.channelIds && body.channelIds.length > 0
+    ? providers.filter((p) => body.channelIds!.includes(p.id))
+    : providers.filter((p) => p.enabled && p.autoSyncModels)
+
+  if (targets.length === 0) {
+    return c.json<ApiResponse>({
+      success: false,
+      message: '没有开启「自动同步模型」的渠道。请在需要自动同步的渠道设置中勾选该开关。',
+    }, 400)
+  }
+
+  const results: Array<Awaited<ReturnType<typeof syncProviderModelsInternal>>> = []
+  let totalNew = 0
+
+  for (const p of targets) {
+    const r = await syncProviderModelsInternal(c.env, p, body.freeOnly || false)
+    results.push(r)
+    totalNew += r.newModels.length
+  }
+
+  return c.json<ApiResponse<{ syncedCount: number; totalNew: number; results: typeof results }>>({
+    success: true,
+    data: { syncedCount: targets.length, totalNew, results },
+    message: `已同步 ${targets.length} 个渠道，共新增 ${totalNew} 个模型！`,
+  })
+}
+
+/** 每日定时模型自动同步入口（`GET|POST /cron/models`，无人值守定时触发） */
+export async function handleCronModels(c: Context<{ Bindings: Env }>) {
+  const expected = await codebuddyCronToken(c.env)
+  if (!expected) {
+    return c.json<ApiResponse>({ success: false, message: '网关未配置 ADMIN_PASSWORD，定时任务不可用' }, 503)
+  }
+  const body = await c.req.json<{ token?: string }>().catch(() => ({} as { token?: string }))
+  const provided = (c.req.header('X-Cron-Token') || c.req.query('token') || body.token || '').trim()
+  if (!provided || !timingSafeEqual(provided, expected)) {
+    return c.json<ApiResponse>({ success: false, message: '令牌无效' }, 401)
+  }
+
+  const today = shanghaiDate()
+  const force = c.req.query('force') === '1'
+
+  // 当日节流检查
+  if (!force) {
+    try {
+      const raw = await getKV(c.env).get(CRON_MODELS_STATE_KEY)
+      if (raw) {
+        const state = JSON.parse(raw) as ModelsCronState
+        if (state.date === today) {
+          return c.json<ApiResponse<ModelsCronState>>({
+            success: true,
+            data: state,
+            message: `今日（${today}）已执行过模型同步，跳过。同步 ${state.syncedChannels} 个渠道，新增 ${state.newModelsAdded} 个模型。`,
+          })
+        }
+      }
+    } catch {}
+  }
+
+  const providers = await getProviders(c.env)
+  // 严格只同步开启了 autoSyncModels 的已启用渠道
+  const targets = providers.filter((p) => p.enabled && p.autoSyncModels)
+  let totalNew = 0
+  const results: any[] = []
+
+  for (const p of targets) {
+    const r = await syncProviderModelsInternal(c.env, p, false)
+    results.push(r)
+    totalNew += r.newModels.length
+  }
+
+  const newState: ModelsCronState = {
+    date: today,
+    at: new Date().toISOString(),
+    totalChannels: providers.length,
+    syncedChannels: targets.length,
+    newModelsAdded: totalNew,
+  }
+
+  try {
+    await getKV(c.env).put(CRON_MODELS_STATE_KEY, JSON.stringify(newState))
+  } catch {}
+
+  return c.json<ApiResponse<{ state: ModelsCronState; results: typeof results }>>({
+    success: true,
+    data: { state: newState, results },
+    message: `模型同步完成：共检查 ${providers.length} 个渠道，同步 ${targets.length} 个开启自动同步的渠道，新增 ${totalNew} 个模型！`,
+  })
 }
 
 // ===== 令牌管理 =====

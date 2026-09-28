@@ -1025,6 +1025,12 @@ async function batchTestKeys() {
   showResult(tr, ok > 0, '测试完成: ' + ok + ' / ' + rows.length + ' 个 Key 连接正常')
 }
 
+function cleanModelAlias(id) {
+  return String(id || '')
+    .replace(/[:\/_-]free$/i, '')
+    .replace(/:free(?=[:\/_-]|$)/gi, '')
+}
+
 function addMdlRow() {
   const c = document.getElementById('amodels')
   const d = document.createElement('div')
@@ -1036,11 +1042,19 @@ function addMdlRow() {
 function addMdlToForm(mid) {
   const rows = document.querySelectorAll('#amodels .ami')
   for (let i = 0; i < rows.length; i++) {
-    if (!rows[i].value.trim()) { rows[i].value = mid; return }
+    if (!rows[i].value.trim()) {
+      rows[i].value = mid
+      const al = rows[i].parentElement.querySelector('.amal')
+      if (al && !al.value) al.value = cleanModelAlias(mid)
+      return
+    }
   }
   addMdlRow()
   const all = document.querySelectorAll('#amodels .ami')
-  all[all.length - 1].value = mid
+  const last = all[all.length - 1]
+  last.value = mid
+  const al = last.parentElement.querySelector('.amal')
+  if (al && !al.value) al.value = cleanModelAlias(mid)
 }
 
 function testNewMdl(btn) {
@@ -1103,6 +1117,7 @@ async function createProv() {
   }).filter(Boolean)
 
   const enabled = document.getElementById('aen').checked
+  const autoSyncModels = document.getElementById('async-new') ? document.getElementById('async-new').checked : false
   const mirrorUrls = document.getElementById('amirror').value
   const ttsConf = isTts ? {
     voice: document.getElementById('av').value.trim() || 'zh-CN-XiaoxiaoNeural',
@@ -1114,7 +1129,7 @@ async function createProv() {
   const r = await fetch('/admin/api/providers', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, name: nm, baseUrl: url, apiType, type, region: isCodebuddyType(type) ? cbRegionValue('new') : undefined, apiKeys: keys, models, mirrorUrls, enabled, project: provProject('new') || undefined, location: provVertexLocation('new') || undefined, ...ttsConf })
+    body: JSON.stringify({ id, name: nm, baseUrl: url, apiType, type, region: isCodebuddyType(type) ? cbRegionValue('new') : undefined, apiKeys: keys, models, mirrorUrls, enabled, autoSyncModels, project: provProject('new') || undefined, location: provVertexLocation('new') || undefined, ...ttsConf })
   })
   const d = await r.json()
   if (d.success) { toast('渠道创建成功', 'success'); location.reload() }
@@ -1196,6 +1211,8 @@ function showEditModelsList(id, models, freeOnly) {
 
 function addMdlToEdit(id, mid) {
   document.getElementById('nmid-' + id).value = mid
+  const al = document.getElementById('nmal-' + id)
+  if (al) al.value = cleanModelAlias(mid)
   addMdl(id)
 }
 
@@ -1205,7 +1222,8 @@ function getMdl(id) {
     const idx = parseInt(item.dataset.idx), mid = document.getElementById('mid-' + id + '-' + idx).value.trim()
     const en = document.getElementById('men-' + id + '-' + idx).checked
     const alEl = document.getElementById('mal-' + id + '-' + idx)
-    const alias = alEl ? alEl.value.trim() : ''
+    let alias = alEl ? alEl.value.trim() : ''
+    if (!alias && mid) alias = cleanModelAlias(mid)
     if (!mid) return null
     return alias ? { id: mid, enabled: en, alias: alias } : { id: mid, enabled: en }
   }).filter(Boolean)
@@ -1231,6 +1249,7 @@ async function save(id) {
   const dvKeys = type === 'devin' ? provDevinKeys(id) : null
   if (dvKeys && dvKeys.length) keys = dvKeys.map(k => ({ key: k, enabled: true }))
   const models = getMdl(id), enabled = document.getElementById('en-' + id).checked
+  const autoSyncModels = document.getElementById('sync-' + id) ? document.getElementById('sync-' + id).checked : false
   const mirEl = document.getElementById('mir-' + id)
   const mirrorUrls = mirEl ? mirEl.value : undefined
   const ttsConf = isTts ? {
@@ -1243,7 +1262,7 @@ async function save(id) {
   const r = await fetch('/admin/api/providers/' + encodeURIComponent(id), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: nm, baseUrl: url, apiType, type, region: isCodebuddyType(type) ? cbRegionValue(id) : undefined, apiKeys: keys, models, mirrorUrls, enabled, newId, project: provProject(id) || undefined, location: provVertexLocation(id) || undefined, ...ttsConf })
+    body: JSON.stringify({ name: nm, baseUrl: url, apiType, type, region: isCodebuddyType(type) ? cbRegionValue(id) : undefined, apiKeys: keys, models, mirrorUrls, enabled, autoSyncModels, newId, project: provProject(id) || undefined, location: provVertexLocation(id) || undefined, ...ttsConf })
   })
   const d = await r.json()
   if (d.success) { toast('已保存', 'success'); location.reload() }
@@ -1258,9 +1277,51 @@ async function del(id) {
   else toast(d.message || '删除失败', 'error')
 }
 
+async function autoUpdateProviderModels(id) {
+  toast('正在拉取上游最新模型并自动去 -free 增量入库…', 'success')
+  try {
+    const r = await fetch('/admin/api/providers/' + encodeURIComponent(id) + '/sync-models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ freeOnly: false }),
+    })
+    const d = await r.json()
+    if (d.success) {
+      toast(d.message || '模型已更新并保存入库', 'success')
+      setTimeout(() => location.reload(), 1200)
+    } else {
+      toast(d.message || '更新失败', 'error')
+    }
+  } catch (e) {
+    toast('网络请求失败: ' + e.message, 'error')
+  }
+}
+
+async function syncAllEnabledModels() {
+  toast('正在同步所有开启了「自动同步」的渠道…', 'success')
+  try {
+    const r = await fetch('/admin/api/sync-models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ freeOnly: false }),
+    })
+    const d = await r.json()
+    if (d.success) {
+      toast(d.message || '全渠道同步完成', 'success')
+      setTimeout(() => location.reload(), 1500)
+    } else {
+      toast(d.message || '同步失败', 'error')
+    }
+  } catch (e) {
+    toast('网络请求失败: ' + e.message, 'error')
+  }
+}
+
 function addMdl(id) {
   const inp = document.getElementById('nmid-' + id), mid = inp.value.trim()
-  const alInp = document.getElementById('nmal-' + id), alias = alInp ? alInp.value.trim() : ''
+  const alInp = document.getElementById('nmal-' + id)
+  let alias = alInp ? alInp.value.trim() : ''
+  if (!alias && mid) alias = cleanModelAlias(mid)
   if (!mid) { toast('请输入模型 ID', 'error'); return }
   const c = document.getElementById('ml-' + id), idx = c.querySelectorAll('[data-idx]').length
   const d = document.createElement('div')

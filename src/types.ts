@@ -38,6 +38,8 @@ export interface Provider {
   apiKeys: ApiKeyEntry[]
   models: Model[]
   enabled: boolean
+  /** 是否允许自动同步模型 */
+  autoSyncModels?: boolean
   /** OpenCode 镜像地址列表(后台可配置, 为空时回退 OPENCODE_MIRRORS_URL 环境变量) */
   mirrorUrls?: string[]
   /** GCP 项目 ID(仅 type=antigravity 使用; 一般留空由网关自动解析) */
@@ -175,6 +177,7 @@ export interface CreateProviderRequest {
   volume?: string
   pitch?: string
   enabled?: boolean
+  autoSyncModels?: boolean
 }
 
 export interface UpdateProviderRequest {
@@ -194,6 +197,7 @@ export interface UpdateProviderRequest {
   volume?: string
   pitch?: string
   enabled?: boolean
+  autoSyncModels?: boolean
   /** 修改渠道 ID 时的新 ID */
   newId?: string
 }

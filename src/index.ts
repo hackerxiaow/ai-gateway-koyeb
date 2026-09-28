@@ -39,6 +39,9 @@ import {
   handleCodebuddyCheckin,
   handleCronCheckin,
   handleClineQuota,
+  handleSyncProviderModels,
+  handleSyncAllModels,
+  handleCronModels,
 } from './admin'
 import { renderHomePage, renderLoginPage, renderAdminPage } from './pages'
 import { probeDeepSeek, probeDeepSeekLogin } from './deepseek-auth-probe'
@@ -104,6 +107,8 @@ app.post('/admin/api/providers', handleCreateProvider)
 app.put('/admin/api/providers/:id', handleUpdateProvider)
 app.delete('/admin/api/providers/:id', handleDeleteProvider)
 app.post('/admin/api/providers/:id/test-model', handleTestModel)
+app.post('/admin/api/providers/:id/sync-models', handleSyncProviderModels)
+app.post('/admin/api/sync-models', handleSyncAllModels)
 // DeepSeek 账号托管（方案 B：网关代登录换 userToken）
 app.put('/admin/api/providers/:id/ds-account', handleSaveDsAccount)
 app.post('/admin/api/providers/:id/ds-login', handleDsLogin)
@@ -157,6 +162,9 @@ app.post('/admin/api/codebuddy/checkin', handleCodebuddyCheckin)
 app.get('/cron/checkin', handleCronCheckin)
 app.on('HEAD', '/cron/checkin', handleCronCheckin)
 app.post('/cron/checkin', handleCronCheckin)
+app.get('/cron/models', handleCronModels)
+app.on('HEAD', '/cron/models', handleCronModels)
+app.post('/cron/models', handleCronModels)
 
 // ===== 备份/恢复 =====
 app.get('/admin/api/backup/export', handleBackupExport)
