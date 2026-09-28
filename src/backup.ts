@@ -202,14 +202,25 @@ export interface TelegramConfig {
   chatId: string
 }
 
-async function getTgConfig(env: Env): Promise<TelegramConfig | null> {
+export async function getTgConfig(env: Env): Promise<TelegramConfig | null> {
   const res = await getKV(env).get('telegram:backup')
   if (!res) return null
   try { return JSON.parse(res) as TelegramConfig } catch { return null }
 }
 
-async function saveTgConfig(env: Env, botToken: string, chatId: string): Promise<void> {
+export async function saveTgConfig(env: Env, botToken: string, chatId: string): Promise<void> {
   await getKV(env).put('telegram:backup', JSON.stringify({ botToken, chatId }))
+}
+
+export async function handleTelegramSave(c: Context<{ Bindings: Env }>) {
+  const { botToken, chatId } = await c.req.json<TelegramConfig>()
+  if (!botToken || !chatId) return c.json<ApiResponse>({ success: false, message: '请填写 Bot Token 和 Chat ID' }, 400)
+  try {
+    await saveTgConfig(c.env, botToken, chatId)
+    return c.json<ApiResponse>({ success: true, message: 'Telegram 备份配置已成功保存' })
+  } catch (e) {
+    return c.json<ApiResponse>({ success: false, message: '保存失败: ' + (e as Error).message }, 500)
+  }
 }
 
 export async function handleTelegramTest(c: Context<{ Bindings: Env }>) {
@@ -219,7 +230,7 @@ export async function handleTelegramTest(c: Context<{ Bindings: Env }>) {
     const r = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: 'AI Gateway: 这是一个测试消息，配置成功！' }),
+      body: JSON.stringify({ chat_id: chatId, text: 'AI GATEWAY: 这是一个测试消息，配置成功！' }),
     })
     const d = await r.json() as any
     if (d.ok) {
@@ -240,7 +251,7 @@ export async function handleBackupToTelegram(c: Context<{ Bindings: Env }>) {
     const filename = `ai-gateway-backup-${data.exportedAt.replace(/[:.]/g, '-')}.json`
     const fd = new FormData()
     fd.append('chat_id', chatId)
-    fd.append('caption', `AI Gateway 手动快照\n时间：${data.exportedAt}\n渠道与配置：${data.kv.length} 项\n用量记录：${data.usage.length} 条`)
+    fd.append('caption', `AI GATEWAY 手动快照\n时间：${data.exportedAt}\n渠道与配置：${data.kv.length} 项\n用量记录：${data.usage.length} 条`)
     fd.append('document', blob, filename)
 
     const r = await fetch(`https://api.telegram.org/bot${botToken}/sendDocument`, { method: 'POST', body: fd })

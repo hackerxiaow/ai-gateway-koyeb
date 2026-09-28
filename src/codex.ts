@@ -407,7 +407,7 @@ export async function handleCodexRequest(p: OAuthCallParams, subPath: string): P
 
       markOk(hash)
       defer(p, persistHealth())
-      const extraHeaders = relay ? {} : { 'x-codex-account': String(accountIndex), 'x-codex-cooldown': String(coolingCount) }
+      const extraHeaders: Record<string, string> = relay ? {} : { 'x-codex-account': String(accountIndex), 'x-codex-cooldown': String(coolingCount) }
 
       if (wantStream && upstream.body) {
         const stream = createOpenAIStreamFromResponses(upstream.body, p.requestedModel, (usage) => {

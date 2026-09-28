@@ -44,7 +44,7 @@ import { renderHomePage, renderLoginPage, renderAdminPage } from './pages'
 import { probeDeepSeek, probeDeepSeekLogin } from './deepseek-auth-probe'
 import { seedInitialData, getSession } from './storage'
 import { ensureD1Tables, ensurePgTables } from './storage-adapter'
-import { handleBackupExport, handleBackupImport, handleBackupToR2, handleBackupList, handleBackupRestore, handleBackupDelete, handleTelegramTest, handleBackupToTelegram } from './backup'
+import { handleBackupExport, handleBackupImport, handleBackupToR2, handleBackupList, handleBackupRestore, handleBackupDelete, handleTelegramTest, handleTelegramSave, handleBackupToTelegram } from './backup'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -167,6 +167,7 @@ app.post('/admin/api/backup/restore', handleBackupRestore)
 app.post('/admin/api/backup/delete', handleBackupDelete)
 // Telegram 备份
 app.post('/admin/api/telegram/test', handleTelegramTest)
+app.post('/admin/api/telegram/save', handleTelegramSave)
 
 // ===== DeepSeek 设备身份 / WAF 可达性探针（诊断用，判断「代登录」是否可行） =====
 // GET  只做本地派生 + 无副作用联网探测（不提交任何凭据）
