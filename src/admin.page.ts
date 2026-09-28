@@ -167,10 +167,7 @@ ${H('控制台')}
       <section id="providers" class="workspace-section" aria-labelledby="providers-title">
         <div class="section-heading">
           <div><h2 id="providers-title">渠道管理</h2><p>配置上游 API 地址、请求协议、访问密钥与模型映射。</p></div>
-          <div class="fc" style="gap:8px;flex-wrap:wrap">
-            <button class="btn btn-s" onclick="syncAllEnabledModels()">${icon('refresh', '', 14)} 一键同步模型</button>
-            <button class="btn btn-p" onclick="showAdd()">${icon('plus', '', 14)}添加渠道</button>
-          </div>
+          <button class="btn btn-p" onclick="showAdd()">${icon('plus', '', 14)}添加渠道</button>
         </div>
 
         <div class="af-w">
@@ -338,16 +335,10 @@ ${H('控制台')}
             </fieldset>
 
             <div class="panel-actions">
-              <div class="fc" style="gap:16px;flex-wrap:wrap">
-                <label class="fc" style="gap:8px;cursor:pointer">
-                  <span class="tg"><input type="checkbox" checked id="aen"><span class="sl"></span></span>
-                  <span style="font-size:13px;font-weight:500">创建后立即启用</span>
-                </label>
-                <label class="fc" style="gap:8px;cursor:pointer" title="开启后参与「一键同步模型」与每日定时任务；无法获取模型的渠道请勿勾选">
-                  <span class="tg"><input type="checkbox" id="async-new"><span class="sl"></span></span>
-                  <span style="font-size:13px;font-weight:500">参与一键与定时同步模型</span>
-                </label>
-              </div>
+              <label class="fc" style="gap:8px;cursor:pointer">
+                <span class="tg"><input type="checkbox" checked id="aen"><span class="sl"></span></span>
+                <span style="font-size:13px;font-weight:500">创建后立即启用</span>
+              </label>
               <div>
                 <button class="btn btn-s" onclick="hideAdd()">取消</button>
                 <button class="btn btn-p" onclick="createProv()">${icon('check', '', 14)} 创建渠道</button>
@@ -381,7 +372,6 @@ ${H('控制台')}
                   <span class="sl"></span>
                 </label>
                 <span class="bd ${p.enabled ? 'bd-on' : 'bd-off'}">${p.enabled ? '已启用' : '未启用'}</span>
-                ${p.autoSyncModels ? `<span class="bd bd-info" title="已开启自动同步模型">自动同步</span>` : ''}
                 ${(p.type || '') === 'codex' && codexRelayHost ? `<span class="bd bd-info" title="经 ${escapePageHtml(codexRelayHost)} 中继">经中继</span>` : ''}
               </div>
             </div>
@@ -389,10 +379,7 @@ ${H('控制台')}
             <div class="pd" id="dt-${escapePageHtml(p.id)}">
               <div class="detail-heading">
                 <div><h3>编辑 ${escapePageHtml(p.name)}</h3><p>修改配置后保存即刻生效于后续请求。</p></div>
-                <div class="fc" style="gap:8px">
-                  <button class="btn btn-s" type="button" onclick="autoUpdateProviderModels('${p.id}')">${icon('refresh', '', 14)} 自动更新模型</button>
-                  <span class="protocol-chip">${(p.type || p.apiType || 'openai').toUpperCase()}</span>
-                </div>
+                <span class="protocol-chip">${(p.type || p.apiType || 'openai').toUpperCase()}</span>
               </div>
 
               <div class="fr">
@@ -418,18 +405,6 @@ ${H('控制台')}
                     <option value="vertex" ${p.type === 'vertex' ? 'selected' : ''}>Vertex AI 反代</option>
                     <option value="devin" ${p.type === 'devin' ? 'selected' : ''}>Devin 反代</option>
                     <option value="zai" ${p.type === 'zai' ? 'selected' : ''}>Z.AI (GLM 国际)</option>
-                    <option value="codebuddy" ${p.type === 'codebuddy' ? 'selected' : ''}>CodeBuddy (腾讯) 反代</option>
-                    <option value="cline" ${p.type === 'cline' ? 'selected' : ''}>Cline 反代</option>
-                  </select>
-                </div>
-              </div>
-              <div class="fg" style="margin-top:6px">
-                <label class="fc" style="gap:8px;cursor:pointer" title="开启后参与「一键同步模型」与每日定时任务；无法获取模型的渠道请保持关闭">
-                  <span class="tg"><input type="checkbox" ${p.autoSyncModels ? 'checked' : ''} id="sync-${escapePageHtml(p.id)}"><span class="sl"></span></span>
-                  <span style="font-size:13px;font-weight:500">参与一键与定时同步模型</span>
-                  <span class="form-helper" style="margin-top:0">（开启后，系统会自动拉取最新模型并去 -free 别名增量入库；无法获取模型的渠道保持关闭即可）</span>
-                </label>
-              </div>
                     <option value="codebuddy" ${p.type === 'codebuddy' ? 'selected' : ''}>CodeBuddy (腾讯) 反代</option>
                     <option value="cline" ${p.type === 'cline' ? 'selected' : ''}>Cline 反代</option>
                   </select>
