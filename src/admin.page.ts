@@ -540,18 +540,20 @@ ${H('控制台')}
         <div class="key-list">
           ${proxyKeys.length === 0 ? `<div class="empty-state">${icon('key', '', 36)}<h3>暂无访问令牌</h3><p>生成令牌后即可授权外部客户端调用本网关。</p><button class="btn btn-p" onclick="genKey()" style="margin-top:12px">生成令牌</button></div>` : ''}
           ${proxyKeys.map(k => `<article class="ki" data-id="${escapePageHtml(k.id)}">
-            <div class="key-main">
-              <span class="key-icon">${icon('key', '', 18)}</span>
-              <div>
-                <div class="kv">
-                  <span class="kv__value" id="kv-${escapePageHtml(k.id)}" data-full="${escapePageHtml(k.key)}" data-vis="0">${escapePageHtml(k.key.length > 12 ? k.key.substring(0, 8) + '*****' + k.key.substring(k.key.length - 4) : k.key)}</span>
-                  <button class="icon-btn" onclick="toggleKeyVis('${k.id}')" title="明文切换">${icon('eye', '', 14)}</button>
-                  <button class="icon-btn" onclick='copyText("${escapePageHtml(k.key)}",this)' title="复制">${icon('copy', '', 14)}</button>
-                  <button class="icon-btn" onclick="regenerateKey('${k.id}')" title="重新生成">${icon('refresh', '', 14)}</button>
+            <div class="ki-main-wrap">
+              <span class="key-icon">${icon('key', '', 22)}</span>
+              <div class="ki-content">
+                <div class="ki-top-row">
+                  <div class="kv">
+                    <span class="kv__value" id="kv-${escapePageHtml(k.id)}" data-full="${escapePageHtml(k.key)}" data-vis="0">${escapePageHtml(k.key.length > 12 ? k.key.substring(0, 8) + '*****' + k.key.substring(k.key.length - 4) : k.key)}</span>
+                    <button class="icon-btn" onclick="toggleKeyVis('${k.id}')" title="明文切换">${icon('eye', '', 13)}</button>
+                    <button class="icon-btn" onclick='copyText("${escapePageHtml(k.key)}",this)' title="复制">${icon('copy', '', 13)}</button>
+                    <button class="icon-btn" onclick="regenerateKey('${k.id}')" title="重新生成">${icon('refresh', '', 13)}</button>
+                  </div>
                 </div>
                 <div class="key-meta">
-                  <h3>${escapePageHtml(k.name || '未命名令牌')}</h3>
-                  <span>·</span>
+                  <h3 class="key-name" title="${escapePageHtml(k.name || '未命名令牌')}">${escapePageHtml(k.name || '未命名令牌')}</h3>
+                  <span class="key-meta__sep">·</span>
                   <p>创建于 ${new Date(k.createdAt).toLocaleDateString()} · ${k.expiresAt ? '有效至 ' + new Date(k.expiresAt).toLocaleDateString() : '永久有效'}</p>
                 </div>
               </div>
@@ -559,7 +561,7 @@ ${H('控制台')}
             <div class="key-actions">
               <label class="tg"><input type="checkbox" ${k.enabled ? 'checked' : ''} onchange="toggleProxyKey('${k.id}',this.checked)"><span class="sl"></span></label>
               <span class="bd ${k.enabled ? 'bd-on' : 'bd-off'}">${k.enabled ? '已启用' : '已禁用'}</span>
-              <button class="icon-btn bd-del" onclick="rmKey('${k.id}')" title="删除令牌">${icon('trash', '', 14)}</button>
+              <button class="icon-btn bd-del" onclick="rmKey('${k.id}')" title="删除令牌">${icon('trash', '', 13)}</button>
             </div>
           </article>`).join('')}
         </div>

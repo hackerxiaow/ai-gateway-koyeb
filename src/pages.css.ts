@@ -2138,16 +2138,16 @@ fieldset.form-group legend {
   gap: 12px;
 }
 
-/* 令牌卡片：参照老站「上信息 / 下操作」的竖向布局，样式维持新版质感 */
+/* 令牌卡片：两行排布（左侧图标大号 42px，第一行密钥值，第二行名称与时间，右侧操作区绝不往下顶） */
 .ki {
   background-color: var(--bg-surface);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
-  padding: 16px 18px;
+  padding: 12px 18px;
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   box-shadow: var(--shadow-sm);
   transition: all var(--transition-fast);
 }
@@ -2157,14 +2157,10 @@ fieldset.form-group legend {
   box-shadow: var(--shadow-md);
 }
 
-.key-main {
+.ki-main-wrap {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  min-width: 0;
-}
-
-.key-main > div {
+  align-items: center;
+  gap: 14px;
   min-width: 0;
   flex: 1 1 auto;
 }
@@ -2173,62 +2169,151 @@ fieldset.form-group legend {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
+  width: 42px;
+  height: 42px;
   border-radius: var(--radius-md);
   background-color: var(--primary-light);
   color: var(--primary);
   border: 1px solid var(--primary-border);
+  flex-shrink: 0;
+}
+
+.ki-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.ki-top-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 
 .kv {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-width: 0;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-primary);
+  gap: 4px;
+  background-color: var(--bg-surface-subtle);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 3px 8px;
+  flex-shrink: 0;
 }
 
 .kv__value {
-  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  max-width: 240px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.kv .icon-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.kv .icon-btn:hover {
+  background-color: var(--border-strong);
+  color: var(--text-primary);
 }
 
 .key-meta {
   display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  margin-top: 4px;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   color: var(--text-muted);
+  margin-top: 2px;
 }
 
-.key-meta h3 {
-  font-size: 12px;
+.key-name {
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-secondary);
-  max-width: 100%;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 0;
+}
+
+.key-meta__sep {
+  color: var(--border-strong);
+  flex-shrink: 0;
+}
+
+.key-meta p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.key-meta p {
-  min-width: 0;
+.key-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
-.key-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px;
+.key-actions .tg {
+  height: 20px;
+}
+
+.key-actions .icon-btn {
+  width: 26px;
+  height: 26px;
+}
+
+@media (max-width: 768px) {
+  .ki {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding: 14px 16px;
+  }
+  .ki-main-wrap {
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .ki-content {
+    width: 100%;
+    min-width: 0;
+  }
+  .kv {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .kv__value {
+    max-width: unset;
+    flex: 1;
+  }
+  .key-meta {
+    flex-wrap: wrap;
+    gap: 4px 6px;
+  }
+  .key-actions {
+    margin-left: 0;
+    width: 100%;
+    justify-content: space-between;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-light);
+  }
 }
 
 /* ==========================================================================
