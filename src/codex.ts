@@ -220,6 +220,95 @@ function apiHeaders(accessToken: string, accountId: string, stream: boolean): Re
 }
 
 // =====================================================================
+// 账号负载均衡与冷却（与 antigravity 渠道同策略）
+// =====================================================================
+// 原实现按配置顺序依次尝试账号（顺序故障转移）：流量永远先压第一个账号，
+// 把它打到 429 后才轮到下一个，账号被逐个抽干。这里改为：健康账号间随机轮换
+// 摊薄用量；配额耗尽(429)/凭据失效(401/403)的账号记入冷却并排到队尾兜底——
+// 其余账号全失败时仍会尝试它们，故障转移能力不下降；冷却到期自动回池。
+// 冷却状态按 refresh_token 的 sha256 记在 KV，不落明文凭据。
+
+type CodexAccountHealth = { cooldownUntil: number; reason?: string }
+type CodexHealthMap = Record<string, CodexAccountHealth>
+
+const CODEX_HEALTH_PREFIX = 'codex:health:'
+/** 配额耗尽(429)且上游未给重置时间时的兜底冷却时长（Codex 为 5 小时滚动窗口，到期自动重探） */
+const CODEX_COOLDOWN_QUOTA_MS = 30 * 60 * 1000
+/** 凭据/权限问题（401/403，如 refresh_token 失效）不会在几分钟内自愈 */
+const CODEX_COOLDOWN_AUTH_MS = 60 * 60 * 1000
+/** 5xx、网络异常等瞬时故障，短冷却即可 */
+const CODEX_COOLDOWN_TRANSIENT_MS = 5 * 60 * 1000
+/** 单账号冷却上限，防止上游给了离谱的重置时间 */
+const CODEX_COOLDOWN_MAX_MS = 6 * 60 * 60 * 1000
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+async function readCodexHealth(env: Env, providerId: string): Promise<CodexHealthMap> {
+  try {
+    const raw = await getKV(env).get(CODEX_HEALTH_PREFIX + providerId)
+    return raw ? (JSON.parse(raw) as CodexHealthMap) : {}
+  } catch {
+    return {}
+  }
+}
+
+async function writeCodexHealth(env: Env, providerId: string, health: CodexHealthMap): Promise<void> {
+  const now = Date.now()
+  // 只保留仍在冷却期的账号，避免 KV 膨胀
+  const kept: CodexHealthMap = {}
+  for (const [k, v] of Object.entries(health)) {
+    if (v && v.cooldownUntil > now) kept[k] = v
+  }
+  try {
+    if (Object.keys(kept).length > 0) {
+      await getKV(env).put(CODEX_HEALTH_PREFIX + providerId, JSON.stringify(kept))
+    } else {
+      await getKV(env).delete(CODEX_HEALTH_PREFIX + providerId)
+    }
+  } catch { /* 冷却状态写失败不影响本次转发 */ }
+}
+
+/** 从上游错误文本解析重置倒计时，如 "Resets in 23h52m40s" / "Resets in 15m"。 */
+export function parseQuotaResetMs(text: string): number | null {
+  const m = /reset[s]?\s+in\s+(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?/i.exec(text || '')
+  if (!m) return null
+  const h = Number(m[1] || 0)
+  const mi = Number(m[2] || 0)
+  const s = Number(m[3] || 0)
+  const ms = ((h * 60 + mi) * 60 + s) * 1000
+  return ms > 0 ? ms : null
+}
+
+/** 按冷却状态重排账号：可用（洗牌）→ 冷却已到期（试用）→ 仍在冷却（队尾兜底）。只改顺序，不减账号。 */
+export function orderByCooldown<T extends { hash: string }>(accounts: T[], health: CodexHealthMap): T[] {
+  const now = Date.now()
+  const healthy: T[] = []
+  const probation: T[] = []
+  const cooling: T[] = []
+  for (const a of accounts) {
+    const h = health[a.hash]
+    if (!h?.cooldownUntil) healthy.push(a)
+    else if (now >= h.cooldownUntil) probation.push(a)
+    else cooling.push(a)
+  }
+  const shuffle = (arr: T[]): void => {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      const tmp = arr[i]
+      arr[i] = arr[j]
+      arr[j] = tmp
+    }
+  }
+  shuffle(healthy)
+  shuffle(probation)
+  shuffle(cooling)
+  return [...healthy, ...probation, ...cooling]
+}
+
+// =====================================================================
 // 对外入口
 // =====================================================================
 
@@ -246,9 +335,38 @@ export async function handleCodexRequest(p: OAuthCallParams, subPath: string): P
   let lastError = ''
   let lastStatus = 502
 
-  // 走中继时凭据轮换由对端负责，本机只发一次
-  const attempts: string[] = relay ? [''] : tokens
-  for (const refreshToken of attempts) {
+  // 走中继时凭据轮换由对端负责，本机只发一次；直连时多账号随机打散 + 冷却排序
+  const attempts: Array<{ token: string; index: number; hash: string }> = relay
+    ? [{ token: '', index: 0, hash: '' }]
+    : await Promise.all(tokens.map(async (raw, i) => ({ token: raw, index: i + 1, hash: await sha256Hex(raw) })))
+  const health: CodexHealthMap = relay ? {} : await readCodexHealth(p.env, p.providerId)
+  const ordered = relay ? attempts : orderByCooldown(attempts, health)
+  let healthChanged = false
+  const markFailed = (hash: string, reason: string, cooldownMs: number): void => {
+    if (!hash) return
+    health[hash] = { cooldownUntil: Date.now() + Math.min(cooldownMs, CODEX_COOLDOWN_MAX_MS), reason }
+    healthChanged = true
+  }
+  const markOk = (hash: string): void => {
+    if (hash && health[hash]) {
+      delete health[hash]
+      healthChanged = true
+    }
+  }
+  const persistHealth = async (): Promise<void> => {
+    if (!healthChanged) return
+    healthChanged = false
+    await writeCodexHealth(p.env, p.providerId, health)
+  }
+  const coolingCount = ordered.filter((a) => {
+    const h = health[a.hash]
+    return !!h?.cooldownUntil && Date.now() < h.cooldownUntil
+  }).length
+  if (coolingCount > 0) {
+    console.log(`[codex] ${p.providerId}: ${coolingCount}/${ordered.length} account(s) in cooldown, tried last`)
+  }
+
+  for (const { token: refreshToken, index: accountIndex, hash } of ordered) {
     try {
       let endpoint = `${CODEX_API_BASE}/responses`
       let headers: Record<string, string>
@@ -268,9 +386,28 @@ export async function handleCodexRequest(p: OAuthCallParams, subPath: string): P
       if (!upstream.ok) {
         lastStatus = upstream.status
         lastError = `HTTP ${upstream.status}: ${(await readErrorBody(upstream)).slice(0, 300)}`
-        if ([401, 403, 429].includes(upstream.status) || upstream.status >= 500) continue
+        if (upstream.status === 429) {
+          // 配额耗尽按账号冷却：优先取上游重置时间（Retry-After 头或文本里的 Resets in），别让后续请求白撞
+          const retryAfter = Number(upstream.headers.get('retry-after'))
+          const reset = (retryAfter > 0 ? retryAfter * 1000 : 0) || parseQuotaResetMs(lastError) || 0
+          markFailed(hash, `429 ${lastError.slice(0, 120)}`, reset > 0 ? reset + 60_000 : CODEX_COOLDOWN_QUOTA_MS)
+          continue
+        }
+        if (upstream.status === 401 || upstream.status === 403) {
+          markFailed(hash, lastError.slice(0, 120), CODEX_COOLDOWN_AUTH_MS)
+          continue
+        }
+        if (upstream.status >= 500) {
+          markFailed(hash, lastError.slice(0, 120), CODEX_COOLDOWN_TRANSIENT_MS)
+          continue
+        }
+        await persistHealth()
         return oauthErrorResponse(lastError, upstream.status, 'upstream_error')
       }
+
+      markOk(hash)
+      defer(p, persistHealth())
+      const extraHeaders = relay ? {} : { 'x-codex-account': String(accountIndex), 'x-codex-cooldown': String(coolingCount) }
 
       if (wantStream && upstream.body) {
         const stream = createOpenAIStreamFromResponses(upstream.body, p.requestedModel, (usage) => {
@@ -278,7 +415,7 @@ export async function handleCodexRequest(p: OAuthCallParams, subPath: string): P
         })
         return new Response(stream, {
           status: 200,
-          headers: { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive' },
+          headers: { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', ...extraHeaders },
         })
       }
 
@@ -296,15 +433,17 @@ export async function handleCodexRequest(p: OAuthCallParams, subPath: string): P
       }, true, 200))
       return new Response(JSON.stringify(openai), {
         status: 200,
-        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...extraHeaders },
       })
     } catch (err) {
       lastError = (err as Error).message || '未知错误'
       // 凭据失效按 401 返回：Cloudflare 边缘会吞掉 5xx 的响应体，用 4xx 才能把原因透给调用方
       lastStatus = err instanceof CodexAuthError ? 401 : 502
+      markFailed(hash, `exception ${lastError.slice(0, 120)}`, err instanceof CodexAuthError ? CODEX_COOLDOWN_AUTH_MS : CODEX_COOLDOWN_TRANSIENT_MS)
       continue
     }
   }
+  await persistHealth()
   return oauthErrorResponse(`所有 Codex 账号均失败，最后一次错误: ${lastError || '未知'}`, lastStatus, lastStatus === 401 ? 'authentication_error' : 'key_exhausted')
 }
 
