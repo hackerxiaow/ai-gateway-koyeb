@@ -3,6 +3,7 @@ import { getProviders } from './storage'
 import { SITE_CONFIG } from './config'
 import type { Env } from './types'
 import { CSS_CONTENT } from './pages.css'
+import { getExternalOrigin } from './request-utils'
 import { icon, renderSiteFooter, CLIENT_ICONS } from './shared.js'
 
 function getPlatformLabel(_env: any, _host?: string): string {
