@@ -1709,4 +1709,27 @@ if (quotaBodyEl) {
 }
 
 if (location.hash === '#usage') loadUsage()
+
+// ── 通用复制按钮（概览 API BASE URL 等）：图标换对勾 + 文字变已复制，1.8s 还原 ──
+document.querySelectorAll('.copy-control').forEach(function (button) {
+  button.addEventListener('click', async function () {
+    var text = button.getAttribute('data-copy') || ''
+    var iconWrap = button.querySelector('.svg-icon')
+    var label = button.querySelector('.copy-label')
+    var originalLabel = label ? label.textContent : ''
+    try {
+      await navigator.clipboard.writeText(text)
+      button.setAttribute('data-state', 'success')
+      if (iconWrap && window.SVG_ICONS && window.SVG_ICONS.check) iconWrap.innerHTML = window.SVG_ICONS.check
+      if (label) label.textContent = '已复制'
+      setTimeout(function () {
+        button.removeAttribute('data-state')
+        if (iconWrap && window.SVG_ICONS && window.SVG_ICONS.copy) iconWrap.innerHTML = window.SVG_ICONS.copy
+        if (label) label.textContent = originalLabel
+      }, 1800)
+    } catch (e) {
+      button.setAttribute('data-state', 'error')
+    }
+  })
+})
 `

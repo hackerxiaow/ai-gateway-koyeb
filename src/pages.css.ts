@@ -931,6 +931,7 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   padding: 6px 10px;
   border-radius: var(--radius-sm);
   background-color: var(--bg-surface-subtle);
@@ -953,20 +954,26 @@ textarea {
   color: var(--text-muted);
 }
 
-/* 移动端：端点条目改为「协议路径在上、中文说明在下」的两行卡片，避免换行错位 */
+/* 端点条目：始终单行（方法+路径左、中文说明右），路径过长时省略号截断 */
+.ep-item {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.ep-item code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ep-item small {
+  flex-shrink: 0;
+}
+
 @media (max-width: 640px) {
   .ep-item {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
-    padding: 8px 12px;
-  }
-  .ep-item small {
-    padding-left: 2px;
-  }
-  .ep-item code {
-    max-width: 100%;
-    overflow-wrap: anywhere;
+    padding: 7px 10px;
+    gap: 8px;
   }
 }
 

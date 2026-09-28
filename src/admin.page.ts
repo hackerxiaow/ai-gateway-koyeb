@@ -4,7 +4,6 @@ import { getCodexUpstreamRelay } from './codex'
 import { SITE_CONFIG, OPENCODE_DEFAULT_URL } from './config'
 import type { Env } from './types'
 import { CSS_CONTENT } from './pages.css'
-import { getExternalOrigin } from './request-utils'
 import { icon, SHARED_JS, renderSiteFooter } from './shared.js'
 import { storageTypeLabel } from './storage-adapter'
 import { AZURE_TTS_VOICES, voiceGroup } from './azure-voices'
@@ -159,7 +158,7 @@ ${H('控制台')}
           <span class="endpoint-box__label">API BASE URL</span>
           <code>${escapePageHtml(apiBase)}</code>
           <button class="btn btn-s copy-control" type="button" data-copy="${escapePageHtml(apiBase)}" aria-label="复制 API 地址">
-            ${icon('copy', '', 14)}<span>复制地址</span>
+            ${icon('copy', '', 14)}<span class="copy-label">复制地址</span>
           </button>
         </div>
       </section>

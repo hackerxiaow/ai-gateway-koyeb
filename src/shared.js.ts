@@ -45,6 +45,14 @@ export const SVG_ICONS: Record<string, string> = {
   anglesLeft: `<svg width="100%" height="100%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/></svg>`
 }
 
+// 前台页面所需的客户端最小图标字典（home/login 未注入 SHARED_JS）
+export const CLIENT_ICONS = JSON.stringify({
+  copy: SVG_ICONS.copy,
+  check: SVG_ICONS.check,
+  eye: SVG_ICONS.eye,
+  eyeSlash: SVG_ICONS.eyeSlash,
+})
+
 // 服务端 TS 渲染 SVG 图标
 export function icon(name: string, cls = '', size = 16): string {
   const code = SVG_ICONS[name] || SVG_ICONS.info

@@ -2,7 +2,7 @@ import { Context } from 'hono'
 import { SITE_CONFIG } from './config'
 import type { Env } from './types'
 import { CSS_CONTENT } from './pages.css'
-import { icon } from './shared.js'
+import { icon, CLIENT_ICONS } from './shared.js'
 
 const H = (title: string) => `
 <head>
@@ -72,6 +72,7 @@ ${H('登录')}
 </main>
 
 <script>
+window.SVG_ICONS = ${CLIENT_ICONS};
 (function () {
   var form = document.getElementById('login-form')
   var username = document.getElementById('u')

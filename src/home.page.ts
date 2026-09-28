@@ -3,8 +3,7 @@ import { getProviders } from './storage'
 import { SITE_CONFIG } from './config'
 import type { Env } from './types'
 import { CSS_CONTENT } from './pages.css'
-import { getExternalOrigin } from './request-utils'
-import { icon, renderSiteFooter } from './shared.js'
+import { icon, renderSiteFooter, CLIENT_ICONS } from './shared.js'
 
 function getPlatformLabel(_env: any, _host?: string): string {
   return 'Koyeb · PostgreSQL'
@@ -69,7 +68,7 @@ ${H('首页')}
         <span class="endpoint-box__label">API BASE URL</span>
         <code>${escapePageHtml(apiBase)}</code>
         <button class="btn btn-s copy-control" type="button" data-copy="${escapePageHtml(apiBase)}" aria-label="复制 API 地址">
-          ${icon('copy', '', 14)}<span>复制地址</span>
+          ${icon('copy', '', 14)}<span class="copy-label">复制地址</span>
         </button>
       </div>
     </div>
@@ -167,9 +166,10 @@ ${H('首页')}
 ${renderSiteFooter(SITE_CONFIG.title, getPlatformLabel(c.env, c.req.header('host')))}
 
 <script>
+window.SVG_ICONS = ${CLIENT_ICONS};
 (function () {
   document.querySelectorAll('.copy-control').forEach(function (button) {
-    var label = button.querySelector('span')
+    var label = button.querySelector('.copy-label')
     var originalLabel = label ? label.textContent : ''
     button.addEventListener('click', async function () {
       var text = button.getAttribute('data-copy') || ''
