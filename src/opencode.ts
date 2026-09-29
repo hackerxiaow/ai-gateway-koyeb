@@ -263,6 +263,68 @@ async function aggregateOpenCodeStream(response: Response, modelId: string): Pro
   })
 }
 
+function sanitizeFailureResponse(failure: StoredFailure): Response {
+  const contentType = failure.headers.get('content-type') || ''
+  const isHtml = contentType.includes('text/html') || contentType.includes('application/xhtml+xml')
+
+  if (isHtml || failure.status === 404) {
+    try {
+      const text = new TextDecoder().decode(failure.body).trim()
+      if (
+        text.startsWith('<!DOCTYPE html>') ||
+        text.startsWith('<html') ||
+        text.includes('<html') ||
+        text.includes('og:image') ||
+        text.includes('<title>')
+      ) {
+        const titleMatch = text.match(/<title[^>]*>([^<]+)<\/title>/i)
+        const title = titleMatch ? titleMatch[1].trim() : '页面未找到'
+        const friendlyMessage = `OpenCode 上游返回 HTML 页面（HTTP ${failure.status}: ${title}），官方/镜像源站可能暂时抖动或未开放该路径`
+        return new Response(JSON.stringify({
+          error: {
+            message: friendlyMessage,
+            type: 'upstream_error',
+            status: failure.status,
+          },
+        }), {
+          status: failure.status === 404 ? 502 : failure.status,
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'no-store',
+          },
+        })
+      }
+    } catch {}
+  }
+
+  return restoreFailure(failure)
+}
+
+function formatOpenCodeErrorMessage(status: number, rawBody: string): string {
+  const text = (rawBody || '').trim()
+  if (!text) return `HTTP ${status}: 空响应`
+
+  if (
+    text.startsWith('<!DOCTYPE html>') ||
+    text.startsWith('<html') ||
+    text.includes('<html') ||
+    text.includes('og:image') ||
+    text.includes('<title>')
+  ) {
+    const titleMatch = text.match(/<title[^>]*>([^<]+)<\/title>/i)
+    const title = titleMatch ? titleMatch[1].trim() : '页面未找到'
+    return `HTTP ${status}: 上游返回 HTML 页面（${title}），疑似官方或镜像源站服务抖动`
+  }
+
+  try {
+    const parsed = JSON.parse(text)
+    if (parsed.error?.message) return `HTTP ${status}: ${parsed.error.message}`
+    if (parsed.message) return `HTTP ${status}: ${parsed.message}`
+  } catch {}
+
+  return `HTTP ${status}: ${text.substring(0, 200)}`
+}
+
 export async function proxyOpenCodeRequest(options: OpenCodeRequestOptions): Promise<Response> {
   const fetcher = options.fetcher ?? fetch
   const random = options.random ?? Math.random
@@ -311,12 +373,38 @@ export async function proxyOpenCodeRequest(options: OpenCodeRequestOptions): Pro
   const enabledKeys = options.apiKeys.filter((entry) => entry.enabled && entry.key)
   const officialUrl = buildUrl(options.baseUrl, options.subPath, options.search)
 
-  for (const entry of enabledKeys) {
+  if (enabledKeys.length > 0) {
+    for (const entry of enabledKeys) {
+      try {
+        const response = await requestUpstream(
+          fetcher,
+          officialUrl,
+          entry.key,
+          upstreamOptions,
+          requestId,
+          sessionId
+        )
+        if (response.ok) {
+          if (!clientWantsStream && (response.headers.get('content-type') || '').includes('text/event-stream')) {
+            return aggregateOpenCodeStream(response, requestedModel)
+          }
+          return response
+        }
+
+        officialFailure = await storeFailure(response)
+        if (response.status !== 401 && response.status !== 403 && response.status !== 429) break
+      } catch (error) {
+        lastTransportError = error
+        break
+      }
+    }
+  } else {
+    // 未配置自定义 Key 时：官方源站（带 'public'）本身也是可用节点，优先尝试官方
     try {
       const response = await requestUpstream(
         fetcher,
         officialUrl,
-        entry.key,
+        'public',
         upstreamOptions,
         requestId,
         sessionId
@@ -327,12 +415,9 @@ export async function proxyOpenCodeRequest(options: OpenCodeRequestOptions): Pro
         }
         return response
       }
-
       officialFailure = await storeFailure(response)
-      if (response.status !== 401 && response.status !== 403 && response.status !== 429) break
     } catch (error) {
       lastTransportError = error
-      break
     }
   }
 
@@ -358,8 +443,8 @@ export async function proxyOpenCodeRequest(options: OpenCodeRequestOptions): Pro
     }
   }
 
-  if (officialFailure) return restoreFailure(officialFailure)
-  if (mirrorFailure) return restoreFailure(mirrorFailure)
+  const finalFailure = mirrorFailure || officialFailure
+  if (finalFailure) return sanitizeFailureResponse(finalFailure)
   return transportErrorResponse(lastTransportError)
 }
 
@@ -391,7 +476,7 @@ export async function testOpenCodeModel(
   const body = await response.text()
   return {
     success: false,
-    message: `HTTP ${response.status}: ${body.substring(0, 200)}`,
+    message: formatOpenCodeErrorMessage(response.status, body),
     statusCode: response.status,
   }
 }
@@ -412,21 +497,30 @@ export async function fetchOpenCodeModels(
   })
 
   if (!response.ok) {
+    const body = await response.text()
     return {
       success: false,
-      message: `HTTP ${response.status}: ${(await response.text()).substring(0, 200)}`,
+      message: formatOpenCodeErrorMessage(response.status, body),
       statusCode: response.status,
     }
   }
 
-  const data = await response.json() as { data?: Array<{ id?: unknown }> }
-  return {
-    success: true,
-    message: '连接成功',
-    statusCode: response.status,
-    data: {
-      ...data,
-      data: Array.isArray(data.data) ? filterOpenCodeModels(data.data) : [],
-    },
+  try {
+    const data = await response.json() as { data?: Array<{ id?: unknown }> }
+    return {
+      success: true,
+      message: '连接成功',
+      statusCode: response.status,
+      data: {
+        ...data,
+        data: Array.isArray(data.data) ? filterOpenCodeModels(data.data) : [],
+      },
+    }
+  } catch (err) {
+    return {
+      success: false,
+      message: `上游返回非 JSON 响应: ${(err as Error).message || '解析失败'}`,
+      statusCode: response.status,
+    }
   }
 }

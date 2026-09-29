@@ -545,9 +545,11 @@ export async function handleTestKeyNew(c: Context<{ Bindings: Env }>) {
       try { data = await response.json() } catch { /* ignore */ }
     }
 
+    const normalized = normalizeModelsResponse(data)
+
     return c.json<ApiResponse>({
       success: true,
-      data: { success: response.ok, statusCode: response.status, data: freeOnly ? filterFreeModels(data) : data },
+      data: { success: response.ok, statusCode: response.status, data: freeOnly ? filterFreeModels(normalized) : normalized },
     })
   } catch (err) {
     return c.json<ApiResponse>({
@@ -555,6 +557,34 @@ export async function handleTestKeyNew(c: Context<{ Bindings: Env }>) {
       data: { success: false, statusCode: 0, message: (err as Error).message || '连接失败' },
     })
   }
+}
+
+/**
+ * 归一化各上游模型列表响应为 OpenAI 兼容的 { object: 'list', data: [{ id, ... }] } 格式。
+ * 兼容标准 OpenAI（data 数组）、TypeSafe（models 数组且字段为 name）、纯字符串数组等非标结构。
+ */
+function normalizeModelsResponse(raw: unknown): { object: string; data: Array<Record<string, unknown>> } {
+  if (!raw || typeof raw !== 'object') return { object: 'list', data: [] }
+  let list: unknown[] = []
+  if (Array.isArray(raw)) {
+    list = raw
+  } else if (Array.isArray((raw as any).data)) {
+    list = (raw as any).data
+  } else if (Array.isArray((raw as any).models)) {
+    list = (raw as any).models
+  }
+
+  const normalized = list.map((item) => {
+    if (typeof item === 'string') return { id: item }
+    if (item && typeof item === 'object') {
+      const rec = item as Record<string, unknown>
+      const id = String(rec.id || rec.name || rec.model || '')
+      return { ...rec, id }
+    }
+    return { id: String(item) }
+  }).filter((item) => Boolean(item.id))
+
+  return { object: 'list', data: normalized }
 }
 
 /**
