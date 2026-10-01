@@ -163,7 +163,7 @@ function redactProvider(p: Provider): Provider & { dsAccount?: Record<string, un
   }
 }
 
-const KEY_PREVIEW = 50
+const KEY_PREVIEW = 10
 
 export async function handleGetProviders(c: Context<{ Bindings: Env }>) {
   const providers = await getProviders(c.env)
@@ -187,16 +187,19 @@ export async function handleListProviderKeys(c: Context<{ Bindings: Env }>) {
   const id = c.req.param('id')
   const provider = await getProvider(c.env, id)
   if (!provider) return c.json<ApiResponse>({ success: false, message: '渠道不存在' }, 404)
-  const page = Math.max(1, parseInt(c.req.query('page') || '1', 10) || 1)
   const size = Math.min(500, Math.max(1, parseInt(c.req.query('size') || '100', 10) || 100))
   const q = (c.req.query('q') || '').toLowerCase()
   const all = provider.apiKeys || []
   const filtered = q ? all.filter((k) => k.key.toLowerCase().includes(q)) : all
-  const start = (page - 1) * size
+  // 优先 offset(前端按已显示条数续拉), 兼容旧 page 参数
+  const offsetQ = c.req.query('offset')
+  const start = offsetQ !== undefined && offsetQ !== null && !isNaN(parseInt(offsetQ, 10))
+    ? Math.max(0, parseInt(offsetQ, 10))
+    : (Math.max(1, parseInt(c.req.query('page') || '1', 10) || 1) - 1) * size
   const keys = filtered.slice(start, start + size)
   return c.json<ApiResponse<any>>({
     success: true,
-    data: { keys, total: all.length, matched: filtered.length, page, size, hasMore: start + size < filtered.length },
+    data: { keys, total: all.length, matched: filtered.length, offset: start, size, hasMore: start + size < filtered.length },
   })
 }
 

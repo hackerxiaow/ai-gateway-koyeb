@@ -1184,14 +1184,13 @@ async function loadMoreKeys(id) {
   const btnBox = document.getElementById('kmore-' + id)
   const btn = btnBox ? btnBox.querySelector('button') : null
   if (btn) { btn.disabled = true; btn.textContent = '加载中…' }
-  const page = parseInt(c.dataset.page || '2', 10)
   try {
-    const r = await fetch('/admin/api/providers/' + encodeURIComponent(id) + '/keys?page=' + page + '&size=100')
+    const offset = c.querySelectorAll('[data-kidx]').length
+    const r = await fetch('/admin/api/providers/' + encodeURIComponent(id) + '/keys?offset=' + offset + '&size=100')
     const d = await r.json()
     if (!d.success) { toast(d.message || '加载失败', 'error'); return }
-    const start = c.querySelectorAll('[data-kidx]').length
+    const start = offset
     d.data.keys.forEach(function (k, i) { c.appendChild(keyRowHtml(id, start + i, k.key, k.enabled)) })
-    c.dataset.page = String(page + 1)
     window.__keysTotal = window.__keysTotal || {}
     window.__keysTotal[id] = d.data.total
     if (btnBox) {
