@@ -1136,7 +1136,11 @@ function keyRowHtml(id, idx, key, enabled) {
   const d = document.createElement('div')
   d.className = 'fc mb-3 field-row'
   d.dataset.kidx = idx
-  d.innerHTML = '<input type="text" value="' + escapeHtml(key || '') + '" class="fx1" id="k-' + id + '-' + idx + '"><label class="tg"><input type="checkbox" ' + (enabled ? 'checked' : '') + ' id="ken-' + id + '-' + idx + '" onchange="keyToggle(\\'' + id + '\\', this)"><span class="sl"></span></label><button class="icon-btn" onclick="copyRowVal(this)">' + svgIcon('copy', '', 14) + '</button><button class="icon-btn" onclick="testKeyRow(\\'' + id + '\\',' + idx + ')">' + svgIcon('plug', '', 14) + '</button><button class="icon-btn" onclick="rmKeyRow(\\'' + id + '\\',' + idx + ', this)">' + svgIcon('times', '', 14) + '</button>'
+  d.innerHTML = '<input type="text" value="' + escapeHtml(key || '') + '" class="fx1" id="k-' + id + '-' + idx + '">' +
+    '<label class="tg"><input type="checkbox" ' + (enabled ? 'checked' : '') + ' id="ken-' + id + '-' + idx + '" onchange="keyToggle(this)"><span class="sl"></span></label>' +
+    '<button class="icon-btn" onclick="copyRowVal(this)">' + svgIcon('copy', '', 14) + '</button>' +
+    '<button class="icon-btn" onclick="testKeyRow(this)">' + svgIcon('plug', '', 14) + '</button>' +
+    '<button class="icon-btn" onclick="rmKeyRow(this)">' + svgIcon('times', '', 14) + '</button>'
   return d
 }
 
@@ -1160,57 +1164,75 @@ async function addKeyRow(id) {
   toast('已添加 (共 ' + res.total + ' 个)', 'success')
 }
 
-async function rmKeyRow(id, idx, el) {
-  const row = el && el.closest ? el.closest('[data-kidx]') : document.querySelector('#keys-' + id + ' [data-kidx="' + idx + '"]')
+async function rmKeyRow(idOrEl, idx, el) {
+  const target = el || (typeof idOrEl !== 'string' ? idOrEl : null)
+  const row = target ? target.closest('[data-kidx]') : document.querySelector('#keys-' + idOrEl + ' [data-kidx="' + idx + '"]')
+  const container = (target || row) ? (target || row).closest('[id^="keys-"]') : null
+  const id = typeof idOrEl === 'string' ? idOrEl : (container ? container.id.slice(5) : '')
   const key = row ? (row.querySelector('input.fx1') || {}).value || '' : ''
-  if (!key) { if (row) row.remove(); return }
-  const res = await keysDelta(id, { remove: [key] })
-  if (!res) return
+  if (id && key) {
+    const res = await keysDelta(id, { remove: [key] })
+    if (!res) return
+  }
   if (row) row.remove()
-  toast('已删除 (剩余 ' + res.total + ' 个)', 'success')
+  toast('已删除', 'success')
 }
 
-async function keyToggle(id, cb) {
-  const row = cb.closest('[data-kidx]')
-  const key = (row.querySelector('input.fx1') || {}).value || ''
-  if (!key) return
+async function keyToggle(idOrEl, el) {
+  const cb = el || idOrEl
+  const row = cb ? cb.closest('[data-kidx]') : null
+  const container = cb ? cb.closest('[id^="keys-"]') : null
+  const id = typeof idOrEl === 'string' && el ? idOrEl : (container ? container.id.slice(5) : '')
+  const key = (row ? row.querySelector('input.fx1') : null)?.value || ''
+  if (!id || !key) return
   const res = await keysDelta(id, cb.checked ? { enable: [key] } : { disable: [key] })
   if (!res) { cb.checked = !cb.checked; return }
   toast(cb.checked ? '已启用' : '已停用', 'success')
 }
 
-async function loadMoreKeys(id) {
-  const c = document.getElementById('keys-' + id)
-  const btnBox = document.getElementById('kmore-' + id)
-  const btn = btnBox ? btnBox.querySelector('button') : null
-  if (btn) { btn.disabled = true; btn.textContent = '加载中…' }
-  try {
-    const offset = c.querySelectorAll('[data-kidx]').length
-    const r = await fetch('/admin/api/providers/' + encodeURIComponent(id) + '/keys?offset=' + offset + '&size=100')
-    const d = await r.json()
-    if (!d.success) { toast(d.message || '加载失败', 'error'); return }
-    const start = offset
-    d.data.keys.forEach(function (k, i) { c.appendChild(keyRowHtml(id, start + i, k.key, k.enabled)) })
-    window.__keysTotal = window.__keysTotal || {}
-    window.__keysTotal[id] = d.data.total
-    if (btnBox) {
-      if (d.data.hasMore) btn.textContent = '查看更多(已显示 ' + c.querySelectorAll('[data-kidx]').length + ' / 共 ' + d.data.total + ')'
-      else btnBox.remove()
-    }
-  } catch (e) { toast('加载失败: ' + e, 'error') } finally { if (btn) btn.disabled = false }
-}
-
-async function testKeyRow(id, idx) {
-  const k = document.getElementById('k-' + id + '-' + idx).value.trim()
-  const url = document.getElementById('url-' + id).value.trim()
+async function testKeyRow(idOrEl, idx) {
+  let id, k
+  if (typeof idOrEl === 'string') {
+    id = idOrEl
+    k = (document.getElementById('k-' + id + '-' + idx) || {}).value || ''
+  } else {
+    const row = idOrEl ? idOrEl.closest('[data-kidx]') : null
+    const container = idOrEl ? idOrEl.closest('[id^="keys-"]') : null
+    id = container ? container.id.slice(5) : ''
+    k = (row ? row.querySelector('input.fx1') : null)?.value || ''
+  }
+  k = k.trim()
+  const url = (document.getElementById('url-' + id) || {}).value || ''
   const ptEl = document.getElementById('pt-' + id)
   const apiType = (ptEl ? ptEl.value : 'openai') === 'anthropic' ? 'anthropic' : 'openai'
   const mirEl = document.getElementById('mir-' + id)
   const mirrorUrls = mirEl ? mirEl.value : undefined
   const tr = document.getElementById('tr-' + id)
-  showSpinner(tr)
+  if (tr) showSpinner(tr)
   const result = await testKeyConnection(url, apiType, k, id, mirrorUrls, false, provType(id), provProject(id))
-  showResult(tr, result.success, result.success ? '' : 'HTTP ' + result.status)
+  if (tr) showResult(tr, result.success, result.success ? '' : 'HTTP ' + result.status)
+}
+
+async function loadMoreKeys(idOrEl) {
+  const btn = (idOrEl && idOrEl.tagName) ? idOrEl : (document.querySelector('#kmore-' + idOrEl + ' button') || null)
+  const container = btn ? btn.closest('fieldset').querySelector('[id^="keys-"]') : document.getElementById('keys-' + idOrEl)
+  const id = container ? container.id.slice(5) : idOrEl
+  const btnBox = document.getElementById('kmore-' + id)
+  if (btn) { btn.disabled = true; btn.textContent = '加载中…' }
+  try {
+    const offset = container.querySelectorAll('[data-kidx]').length
+    const r = await fetch('/admin/api/providers/' + encodeURIComponent(id) + '/keys?offset=' + offset + '&size=100')
+    const d = await r.json()
+    if (!d.success) { toast(d.message || '加载失败', 'error'); return }
+    const start = offset
+    d.data.keys.forEach(function (k, i) { container.appendChild(keyRowHtml(id, start + i, k.key, k.enabled)) })
+    window.__keysTotal = window.__keysTotal || {}
+    window.__keysTotal[id] = d.data.total
+    if (btnBox) {
+      if (d.data.hasMore) btn.textContent = '查看更多(已显示 ' + container.querySelectorAll('[data-kidx]').length + ' / 共 ' + d.data.total + ')'
+      else btnBox.remove()
+    }
+  } catch (e) { toast('加载失败: ' + e, 'error') } finally { if (btn) btn.disabled = false }
 }
 
 async function fetchEditModels(id, freeOnly) {
