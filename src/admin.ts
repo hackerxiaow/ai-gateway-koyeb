@@ -163,9 +163,76 @@ function redactProvider(p: Provider): Provider & { dsAccount?: Record<string, un
   }
 }
 
+const KEY_PREVIEW = 50
+
 export async function handleGetProviders(c: Context<{ Bindings: Env }>) {
   const providers = await getProviders(c.env)
-  return c.json<ApiResponse<Provider[]>>({ success: true, data: providers.map(redactProvider) })
+  const full = c.req.query('full') === '1'
+  const data = providers.map((p) => {
+    const rp: any = redactProvider(p)
+    const total = (rp.apiKeys || []).length
+    rp.apiKeysTotal = total
+    if (!full && total > KEY_PREVIEW) {
+      rp.apiKeys = rp.apiKeys.slice(0, KEY_PREVIEW)
+      rp.apiKeysTruncated = true
+    }
+    return rp
+  })
+  return c.json<ApiResponse<any[]>>({ success: true, data })
+}
+
+// 分页拉取某渠道的 Key 列表(支持子串搜索), 供前端「查看更多」使用
+export async function handleListProviderKeys(c: Context<{ Bindings: Env }>) {
+  const id = c.req.param('id')
+  const provider = await getProvider(c.env, id)
+  if (!provider) return c.json<ApiResponse>({ success: false, message: '渠道不存在' }, 404)
+  const page = Math.max(1, parseInt(c.req.query('page') || '1', 10) || 1)
+  const size = Math.min(500, Math.max(1, parseInt(c.req.query('size') || '100', 10) || 100))
+  const q = (c.req.query('q') || '').toLowerCase()
+  const all = provider.apiKeys || []
+  const filtered = q ? all.filter((k) => k.key.toLowerCase().includes(q)) : all
+  const start = (page - 1) * size
+  const keys = filtered.slice(start, start + size)
+  return c.json<ApiResponse<any>>({
+    success: true,
+    data: { keys, total: all.length, matched: filtered.length, page, size, hasMore: start + size < filtered.length },
+  })
+}
+
+// 增量维护 Key: { add: string[], remove: string[], enable: string[], disable: string[] }
+// 大量 Key 的渠道(上万)不再由前端整包提交, 避免覆盖未加载的 Key
+export async function handleUpdateProviderKeys(c: Context<{ Bindings: Env }>) {
+  const id = c.req.param('id')
+  const provider = await getProvider(c.env, id)
+  if (!provider) return c.json<ApiResponse>({ success: false, message: '渠道不存在' }, 404)
+  const body = await c.req.json<{ add?: string[]; remove?: string[]; enable?: string[]; disable?: string[] }>()
+  const map = new Map<string, { key: string; enabled: boolean }>()
+  for (const k of provider.apiKeys || []) map.set(k.key, { key: k.key, enabled: !!k.enabled })
+  let changed = 0
+  for (const raw of body.add || []) {
+    const key = String(raw || '').trim()
+    if (key && !map.has(key)) { map.set(key, { key, enabled: true }); changed++ }
+  }
+  for (const raw of body.remove || []) {
+    if (map.delete(String(raw || '').trim())) changed++
+  }
+  for (const raw of body.enable || []) {
+    const it = map.get(String(raw || '').trim())
+    if (it && !it.enabled) { it.enabled = true; changed++ }
+  }
+  for (const raw of body.disable || []) {
+    const it = map.get(String(raw || '').trim())
+    if (it && it.enabled) { it.enabled = false; changed++ }
+  }
+  if (!changed) {
+    return c.json<ApiResponse<any>>({ success: true, data: { total: map.size, changed: 0 } })
+  }
+  const updated = await updateProvider(c.env, id, {
+    apiKeys: Array.from(map.values()),
+    updatedAt: new Date().toISOString(),
+  })
+  if (!updated) return c.json<ApiResponse>({ success: false, message: '渠道不存在' }, 404)
+  return c.json<ApiResponse<any>>({ success: true, data: { total: updated.apiKeys.length, changed } })
 }
 
 // ===== DeepSeek 账号托管（方案 B：网关代登录） =====

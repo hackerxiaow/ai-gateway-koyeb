@@ -488,10 +488,11 @@ ${H('控制台')}
               <!-- 镜像地址 -->
               <div class="fg" data-hide-ag ${p.type === 'antigravity' ? 'style="display:none"' : ''}><label>镜像备用地址</label><textarea id="mir-${escapePageHtml(p.id)}" rows="2">${(p.mirrorUrls || []).map(escapePageHtml).join('\\n')}</textarea></div>
 
-              <!-- 上游 API Keys 列表 -->
-              <fieldset class="form-group"><legend>上游 API Keys</legend>
-                <div id="keys-${escapePageHtml(p.id)}">${p.apiKeys.map((k, ki) => `<div class="fc mb-3 field-row" data-kidx="${ki}"><input type="text" value="${escapePageHtml(k.key)}" class="fx1" id="k-${escapePageHtml(p.id)}-${ki}"><label class="tg"><input type="checkbox" ${k.enabled ? 'checked' : ''} id="ken-${escapePageHtml(p.id)}-${ki}"><span class="sl"></span></label><button class="icon-btn" onclick="copyRowVal(this)">${icon('copy', '', 14)}</button><button class="icon-btn" onclick="testKeyRow('${p.id}',${ki})">${icon('plug', '', 14)}</button><button class="icon-btn" onclick="rmKeyRow('${p.id}',${ki})">${icon('times', '', 14)}</button></div>`).join('')}</div>
-                <div class="fc mt-1 field-row"><input type="text" id="nk-${escapePageHtml(p.id)}" placeholder="添加新的 API Key" class="fx1"><button class="btn btn-s" onclick="addKeyRow('${p.id}')">${icon('plus', '', 14)}添加</button></div>
+              <!-- 上游 API Keys 列表(超量分页, 「查看更多」按需加载, 编辑走增量接口) -->
+              <fieldset class="form-group"><legend>上游 API Keys<span style="font-weight:400;color:#888"> (共 ${(p.apiKeys || []).length} 个)</span></legend>
+                <div id="keys-${escapePageHtml(p.id)}" data-shown="${(p.apiKeys || []).length > 50 ? 50 : (p.apiKeys || []).length}">${(p.apiKeys || []).slice(0, 50).map((k, ki) => `<div class="fc mb-3 field-row" data-kidx="${ki}"><input type="text" value="${escapePageHtml(k.key)}" class="fx1" id="k-${escapePageHtml(p.id)}-${ki}"><label class="tg"><input type="checkbox" ${k.enabled ? 'checked' : ''} id="ken-${escapePageHtml(p.id)}-${ki}" onchange="keyToggle('${escapePageHtml(p.id)}', this)"><span class="sl"></span></label><button class="icon-btn" onclick="copyRowVal(this)">${icon('copy', '', 14)}</button><button class="icon-btn" onclick="testKeyRow('${escapePageHtml(p.id)}',${ki})">${icon('plug', '', 14)}</button><button class="icon-btn" onclick="rmKeyRow('${escapePageHtml(p.id)}',${ki},this)">${icon('times', '', 14)}</button></div>`).join('')}</div>
+                ${(p.apiKeys || []).length > 50 ? `<div class="fc mb-3 field-row" id="kmore-${escapePageHtml(p.id)}"><button class="btn btn-s" onclick="loadMoreKeys('${escapePageHtml(p.id)}')">${icon('plus', '', 14)}查看更多(已显示 50 / 共 ${(p.apiKeys || []).length})</button></div>` : ''}
+                <div class="fc mt-1 field-row"><input type="text" id="nk-${escapePageHtml(p.id)}" placeholder="添加新的 API Key" class="fx1"><button class="btn btn-s" onclick="addKeyRow('${escapePageHtml(p.id)}')">${icon('plus', '', 14)}添加</button></div>
               </fieldset>
 
               <!-- 模型列表 -->
