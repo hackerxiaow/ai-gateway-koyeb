@@ -4,9 +4,15 @@ import { getKV, addUsageRecordD1, addUsageRecordPG, getUsageSummaryPG } from './
 
 // ===== 提供商 CRUD =====
 
+// 进程内缓存: providers 可达 MB 级(万级 Key), 每次请求都远端读取+解析代价过高。
+// 单实例部署, 写操作同步更新缓存与远端; 容器重启/外部直改库后首次读取重建缓存。
+let providersCache: Provider[] | null = null
+
 export async function getProviders(env: Env): Promise<Provider[]> {
+  if (providersCache) return providersCache
   const data = await getKV(env).get(KV_KEYS.PROVIDERS)
-  return data ? JSON.parse(data) : []
+  providersCache = data ? JSON.parse(data) : []
+  return providersCache
 }
 
 export async function getProvider(env: Env, id: string): Promise<Provider | null> {
@@ -15,6 +21,7 @@ export async function getProvider(env: Env, id: string): Promise<Provider | null
 }
 
 export async function setProviders(env: Env, providers: Provider[]): Promise<void> {
+  providersCache = providers
   await getKV(env).put(KV_KEYS.PROVIDERS, JSON.stringify(providers))
 }
 
