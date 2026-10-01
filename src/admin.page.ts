@@ -60,6 +60,9 @@ const H = (title: string) => `
 </head>`
 
 export async function renderAdminPage(c: Context<{ Bindings: Env }>) {
+  // 后台页面禁缓存: 防止浏览器/CDN 提供旧版大页面导致交互卡死
+  c.header('Cache-Control', 'no-store, no-cache, must-revalidate')
+  c.header('Pragma', 'no-cache')
   const providers = await getProviders(c.env)
   const proxyKeys = await getProxyKeys(c.env)
   const tgConfig = await getTgConfig(c.env).catch(() => null)
