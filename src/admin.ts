@@ -169,7 +169,8 @@ export async function handleGetProviders(c: Context<{ Bindings: Env }>) {
   const providers = await getProviders(c.env)
   const full = c.req.query('full') === '1'
   const data = providers.map((p) => {
-    const rp: any = redactProvider(p)
+    // 必须浅拷贝: redactProvider 无 dsAccount 时返回原引用, 直接截断会污染缓存
+    const rp: any = { ...redactProvider(p) }
     const total = (rp.apiKeys || []).length
     rp.apiKeysTotal = total
     if (!full && total > KEY_PREVIEW) {
