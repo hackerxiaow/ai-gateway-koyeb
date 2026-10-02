@@ -338,6 +338,16 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
     const enabledKeys = provider.apiKeys.filter(k => k.enabled)
     // 对外用 alias(如果有)，转发给上游用真实 id
     const forwardBody = { ...body, model: modelConfig.id }
+
+    // 净化客户端注入的非标准参数（如 ZCode/Cline 注入的 enable_thinking, reasoning, chat_template 等，避免被上游严格校验拒绝）
+    const UNSUPPORTED_UPSTREAM_PARAMS = [
+      'enable_thinking',
+      'reasoning',
+      'chat_template',
+    ]
+    for (const p of UNSUPPORTED_UPSTREAM_PARAMS) {
+      delete (forwardBody as any)[p]
+    }
     const url = new URL(c.req.url)
     const subPath = url.pathname.replace(/^\/v1\//, '') || 'chat/completions'
     // multipart 请求: 透传原始 body 与 content-type
