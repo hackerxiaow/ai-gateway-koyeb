@@ -999,9 +999,9 @@ export async function handleOAuthModels(c: Context<{ Bindings: Env }>) {
     return c.json<ApiResponse<{ models: string[]; message?: string }>>({ success: r.success, data: { models: r.models, message: r.message }, message: r.message })
   }
   if (provider === 'cline') {
-    // 上游无公开 /models，返回内置免费通道清单
-    const r = fetchClineModels()
-    return c.json<ApiResponse<{ models: string[] }>>({ success: true, data: { models: r.models } })
+    // 实时拉上游 /v1/models（免费 ~ 前缀通道 + 付费模型），失败回退内置清单
+    const r = await fetchClineModels(c.env, apiKey)
+    return c.json<ApiResponse<{ models: string[]; message?: string }>>({ success: r.success, data: { models: r.models, message: r.message }, message: r.message })
   }
   return c.json<ApiResponse>({ success: false, message: `${provider} 渠道请手动填写模型列表` }, 400)
 }

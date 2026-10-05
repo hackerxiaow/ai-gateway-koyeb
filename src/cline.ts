@@ -640,9 +640,44 @@ export async function testCline(env: Env, refreshToken: string, modelId: string)
   }
 }
 
-/** 模型列表：上游无公开 /models，返回内置免费通道清单（客户端写死其他 ID 也能用，不校验） */
-export function fetchClineModels(): { success: boolean; models: string[] } {
-  return { success: true, models: CLINE_BUILTIN_MODELS.slice() }
+/**
+ * 模型列表：调上游 GET /v1/models 实时拉取（2026-10 实测可用，共 400+ 条）。
+ * 免费通道为 `~` 前缀的 -latest 别名，付费模型也在返回里，由用户在后台自行勾选。
+ * 拉取失败时回退到内置清单，保证「获取模型」按钮始终可用。
+ */
+export async function fetchClineModels(env: Env, refreshToken: string): Promise<{ success: boolean; models: string[]; message?: string }> {
+  if (!refreshToken) {
+    return { success: true, models: CLINE_BUILTIN_MODELS.slice(), message: '未填写 refreshToken，返回内置免费通道清单' }
+  }
+  try {
+    const { accessToken } = await getClineAccess(env, refreshToken)
+    const res = await fetch(CLINE_API_BASE + '/models', {
+      method: 'GET',
+      headers: {
+        Authorization: 'Bearer workos:' + accessToken,
+        ...CLINE_FINGERPRINT_HEADERS,
+      },
+      signal: AbortSignal.timeout(30000),
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await readErrorBody(res)).slice(0, 200)}`)
+    const json = await res.json().catch(() => null) as any
+    const list: string[] = Array.isArray(json?.data)
+      ? json.data.map((m: any) => String(m?.id || '')).filter(Boolean)
+      : Array.isArray(json?.models)
+        ? json.models.map((m: any) => String(typeof m === 'string' ? m : (m?.id || ''))).filter(Boolean)
+        : []
+    if (!list.length) throw new Error('上游返回的模型列表为空')
+    // 免费通道（~ 前缀）排前面，其余保持上游顺序，便于后台勾选
+    const free = list.filter((m) => isFreeClineModel(m))
+    const paid = list.filter((m) => !isFreeClineModel(m))
+    return { success: true, models: [...free, ...paid] }
+  } catch (err) {
+    return {
+      success: false,
+      models: CLINE_BUILTIN_MODELS.slice(),
+      message: `上游拉取失败（${(err as Error).message || err}），已返回内置免费通道清单`,
+    }
+  }
 }
 
 export interface ClineDeviceFlow {
