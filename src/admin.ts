@@ -973,16 +973,26 @@ export async function handleOAuthPoll(c: Context<{ Bindings: Env }>) {
 /** 拉取可用模型（claude / kimi，凭据为 refresh_token） */
 export async function handleOAuthModels(c: Context<{ Bindings: Env }>) {
   const provider = c.req.param('provider') || ''
-  const { apiKey, baseUrl, region } = await c.req.json<{ apiKey?: string; baseUrl?: string; region?: string }>()
-  if (!apiKey) {
-    return c.json<ApiResponse>({ success: false, message: '请先填写 refresh_token' }, 400)
+  const body = await c.req.json<{ apiKey?: string; refreshToken?: string; providerId?: string; baseUrl?: string; region?: string }>().catch(() => ({} as any))
+  let token = (body.refreshToken || body.apiKey || '').trim()
+
+  // 核心优化：若前端未传 token（如已存渠道直接点击获取模型），自动读数据库中已保存的第一个有效 Key！
+  if (!token) {
+    const p = await getProvider(c.env, body.providerId || provider)
+    token = (p?.apiKeys?.find((k) => k.enabled)?.key || p?.apiKeys?.[0]?.key || '').trim()
+  }
+
+  const { baseUrl, region } = body
+
+  if (!token && provider !== 'qwen' && provider !== 'deepseek') {
+    return c.json<ApiResponse>({ success: false, message: '未找到有效凭据，请先在渠道中添加并保存至少一个 Key，或填写 token' }, 400)
   }
   if (provider === 'claude') {
-    const r = await fetchClaudeModels(c.env, apiKey)
+    const r = await fetchClaudeModels(c.env, token)
     return c.json<ApiResponse<{ models: string[]; message?: string }>>({ success: r.success, data: { models: r.models, message: r.message }, message: r.message })
   }
   if (provider === 'kimi') {
-    const r = await fetchKimiModels(c.env, apiKey, baseUrl)
+    const r = await fetchKimiModels(c.env, token, baseUrl)
     return c.json<ApiResponse<{ models: string[]; message?: string }>>({ success: r.success, data: { models: r.models, message: r.message }, message: r.message })
   }
   if (provider === 'qwen') {
@@ -995,12 +1005,12 @@ export async function handleOAuthModels(c: Context<{ Bindings: Env }>) {
     return c.json<ApiResponse<{ models: string[] }>>({ success: true, data: { models: r.models } })
   }
   if (provider === 'codebuddy') {
-    const r = await fetchCodebuddyModels(c.env, apiKey, baseUrl, region)
+    const r = await fetchCodebuddyModels(c.env, token, baseUrl, region)
     return c.json<ApiResponse<{ models: string[]; message?: string }>>({ success: r.success, data: { models: r.models, message: r.message }, message: r.message })
   }
   if (provider === 'cline') {
     // 实时拉上游 /v1/models（免费 ~ 前缀通道 + 付费模型），失败回退内置清单
-    const r = await fetchClineModels(c.env, apiKey)
+    const r = await fetchClineModels(c.env, token)
     return c.json<ApiResponse<{ models: string[]; message?: string }>>({ success: r.success, data: { models: r.models, message: r.message }, message: r.message })
   }
   return c.json<ApiResponse>({ success: false, message: `${provider} 渠道请手动填写模型列表` }, 400)

@@ -631,14 +631,14 @@ async function fetchOAuthModels(id) {
     const keys = getKeys(id)
     key = keys.length > 0 ? keys[0].key : ''
   }
-  if (!key) { toast('请先填写或授权获取 refresh_token', 'error'); return }
+  if (id === 'new' && !key) { toast('请先填写或授权获取 refresh_token', 'error'); return }
   if (tr) showSpinner(tr)
   try {
     const baseEl = document.getElementById(id === 'new' ? 'aurl' : 'url-' + id)
     const baseUrl = baseEl ? baseEl.value.trim() : ''
     const r = await fetch('/admin/api/oauth/' + provider + '/models', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken: key, baseUrl: baseUrl, region: cbRegionValue(id) })
+      body: JSON.stringify({ refreshToken: key, apiKey: key, providerId: id !== 'new' ? id : undefined, baseUrl: baseUrl, region: cbRegionValue(id) })
     })
     const d = await r.json()
     if (!d.success) { if (tr) showResult(tr, false, d.message || '获取失败'); return }
