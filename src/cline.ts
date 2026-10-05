@@ -14,8 +14,8 @@
  * 4. 上游风控（都实测自 cline-free，不遵守直接失败）：
  *    - 请求体带 max_tokens 字段：免费模型一律 500 "empty response content" → 整体不发送该字段
  *      （代价：finish_reason=stop 的完整生成无法在网关侧提前截断）。
- *    - 免费通道（deepseek/ cline-free/ cline-pass/ 前缀）非流式被限流 → 强制 stream:true，
- *      非流式请求由网关本地聚合为单条响应。
+ *    - 免费通道（上游 `~` 前缀的 -latest 别名，如 ~anthropic/claude-sonnet-latest）
+ *      非流式被限流 → 强制 stream:true，非流式请求由网关本地聚合为单条响应。
  *    - 并发 > 1 会返回空响应 → 模块级串行队列 + 最小间隔（隔离实例内并发；跨实例由上游兜底）。
  *    - 429 "Try again in 2h 51m" → 解析冷却时长，按「账号 × 模型」粒度冷却（与上游
  *      计额粒度一致：某账号的 deepseek 到上限不影响同账号的 glm），冷却中的组合轮换时跳过。
@@ -62,18 +62,44 @@ const CLINE_FINGERPRINT_HEADERS: Record<string, string> = {
 const CLINE_AT_PREFIX = 'cline:at:'
 const CLINE_DEVICE_PREFIX = 'cline:dev:'
 
-/** 免费通道前缀：非流式被上游限流，必须强制 stream 后由网关聚合 */
-const FREE_CHANNEL_PREFIXES = ['deepseek/', 'cline-free/', 'cline-pass/']
+/** 免费通道判定：非流式被上游限流，必须强制 stream 后由网关聚合。
+ *  上游免费模型统一带 `~` 前缀（-latest 别名体系），旧版的 deepseek/ cline-free/ cline-pass/
+ *  前缀已废弃；`cline-free/` 只是历史通道名，同样按免费处理。 */
+const FREE_CHANNEL_PREFIXES = ['~', 'cline-free/', 'cline-pass/']
 
-/** 默认模型（cline-free 官方免费推荐位） */
-export const CLINE_DEFAULT_MODEL = 'cline-free/deepseek-v4.1-flash'
+/** 判断模型是否为免费通道 */
+function isFreeClineModel(modelId: string): boolean {
+  return FREE_CHANNEL_PREFIXES.some((p) => modelId.startsWith(p))
+}
 
-/** 后台「获取模型列表」返回的内置清单（官方四类免费通道，均实测可用） */
+/** 默认模型（上游官方免费推荐位） */
+export const CLINE_DEFAULT_MODEL = '~deepseek/deepseek-v4-flash-latest'
+
+/**
+ * 后台「获取模型列表」返回的内置清单。
+ *  上游 /v1/models 共 465 个模型，其中免费通道为 `~` 前缀的 18 个 -latest 别名
+ *  （2026-10 实测 8 个主力通道全部可正常出流）。此处只内置免费通道，
+ *  付费模型需用户自行在后台渠道里添加。
+ */
 const CLINE_BUILTIN_MODELS = [
-  CLINE_DEFAULT_MODEL,
-  'deepseek/deepseek-v4-flash',
-  'z-ai/glm-5.3-flash',
-  'poolside/laguna-s-2.1:free',
+  '~deepseek/deepseek-v4-flash-latest',
+  '~deepseek/deepseek-pro-latest',
+  '~deepseek/deepseek-flash-latest',
+  '~anthropic/claude-sonnet-latest',
+  '~anthropic/claude-opus-latest',
+  '~anthropic/claude-haiku-latest',
+  '~anthropic/claude-fable-latest',
+  '~openai/gpt-astra-latest',
+  '~openai/gpt-sol-latest',
+  '~openai/gpt-luna-latest',
+  '~openai/gpt-terra-latest',
+  '~openai/gpt-mini-latest',
+  '~google/gemini-flash-latest',
+  '~google/gemini-pro-latest',
+  '~z-ai/glm-flash-latest',
+  '~z-ai/glm-latest',
+  '~x-ai/grok-latest',
+  '~moonshotai/kimi-latest',
 ]
 
 // =====================================================================
@@ -196,7 +222,7 @@ function rewriteClinePayload(body: Record<string, any>, modelId: string, wantStr
   }
   // ⚠️ 免费模型带 max_tokens 一律 500 "empty response content"，整体不发送（见文件头注释）。
   // 免费通道非流式被限流 → 强制上游 stream，非流式由网关本地聚合。
-  const forceStream = FREE_CHANNEL_PREFIXES.some((p) => modelId.startsWith(p))
+  const forceStream = isFreeClineModel(modelId)
   if (wantStream || forceStream) upstream.stream = true
   for (const k of ['temperature', 'top_p', 'tools', 'tool_choice', 'stop', 'presence_penalty', 'frequency_penalty', 'response_format', 'user', 'n', 'seed']) {
     if (body[k] !== undefined) upstream[k] = body[k]
