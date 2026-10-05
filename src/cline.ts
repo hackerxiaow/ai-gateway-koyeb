@@ -63,13 +63,11 @@ const CLINE_AT_PREFIX = 'cline:at:'
 const CLINE_DEVICE_PREFIX = 'cline:dev:'
 
 /** 免费通道判定：非流式被上游限流，必须强制 stream 后由网关聚合。
- *  1. 真·零扣费免费模型（:free 结尾，以及官方直通 deepseek/deepseek-v4-flash）
- *  2. 赠金通道模型（上游 ~ 前缀的 -latest 别名）
- *  3. 历史兼容前缀（cline-free/ cline-pass/） */
+ *  真·零扣费免费模型（:free 结尾，以及官方直通 deepseek/deepseek-v4-flash） */
 function isFreeClineModel(modelId: string): boolean {
   return (
     modelId.endsWith(':free') ||
-    modelId.startsWith('~') ||
+    modelId === 'deepseek/deepseek-v4-flash' ||
     modelId.startsWith('deepseek/') ||
     modelId.startsWith('cline-free/') ||
     modelId.startsWith('cline-pass/')
@@ -81,19 +79,12 @@ export const CLINE_DEFAULT_MODEL = 'deepseek/deepseek-v4-flash'
 
 /**
  * 后台「获取模型列表」返回的内置清单。
- * 1. 真·零扣费免费模型（实测扣费 0，不消耗任何赠金）
- * 2. 赠金通道模型（带 ~ 前缀，消耗初始 $0.50 额度的顶级模型）
+ * 100% 绝对真免费模型（实测扣费为 0，不消耗任何账户赠金与余额）
  */
 const CLINE_BUILTIN_MODELS = [
-  // ── 1. 真·零扣费免费模型（实测扣费 0，绝不扣账户余额） ──
   'deepseek/deepseek-v4-flash',
-  'qwen/qwen3.8-27b:free',
-  'google/gemma-4-31b-it:free',
-  'google/gemma-4-26b-a4b-it:free',
   'nvidia/nemotron-3-super-120b-a12b:free',
   'nvidia/nemotron-3.5-lightning:free',
-  'nvidia/nemotron-3-ultra-550b-a55b:free',
-  'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
   'poolside/laguna-s-2.1:free',
   'poolside/laguna-xs-2.1:free',
   'cohere/north-mini-code:free',
@@ -101,29 +92,7 @@ const CLINE_BUILTIN_MODELS = [
   'inclusionai/ling-3.0-flash-sante:free',
   'dots-studio/dots-3-note-preview:free',
   'liquid/lfm-2.5-2.6b:free',
-  'thinkingmachines/inkling:free',
-  'thinkingmachines/inkling-small:free',
   'nvidia/nemotron-3.5-content-safety:free',
-
-  // ── 2. 赠金通道模型（带 ~ 前缀，消耗账号 $0.50 赠金的顶级模型） ──
-  '~deepseek/deepseek-v4-flash-latest',
-  '~deepseek/deepseek-pro-latest',
-  '~deepseek/deepseek-flash-latest',
-  '~anthropic/claude-sonnet-latest',
-  '~anthropic/claude-opus-latest',
-  '~anthropic/claude-haiku-latest',
-  '~anthropic/claude-fable-latest',
-  '~openai/gpt-astra-latest',
-  '~openai/gpt-sol-latest',
-  '~openai/gpt-luna-latest',
-  '~openai/gpt-terra-latest',
-  '~openai/gpt-mini-latest',
-  '~google/gemini-flash-latest',
-  '~google/gemini-pro-latest',
-  '~z-ai/glm-flash-latest',
-  '~z-ai/glm-latest',
-  '~x-ai/grok-latest',
-  '~moonshotai/kimi-latest',
 ]
 
 // =====================================================================
