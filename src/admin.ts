@@ -873,7 +873,7 @@ const OAUTH_DEFAULT_MODELS: Record<string, string> = {
   qwen: 'coder-model',
   deepseek: 'deepseek-v4-flash',
   codebuddy: 'deepseek-v4.1-flash',
-  cline: '~deepseek/deepseek-v4-flash-latest',
+  cline: 'deepseek/deepseek-v4-flash',
 }
 
 interface OAuthPollResult {

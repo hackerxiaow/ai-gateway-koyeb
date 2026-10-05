@@ -63,25 +63,49 @@ const CLINE_AT_PREFIX = 'cline:at:'
 const CLINE_DEVICE_PREFIX = 'cline:dev:'
 
 /** 免费通道判定：非流式被上游限流，必须强制 stream 后由网关聚合。
- *  上游免费模型统一带 `~` 前缀（-latest 别名体系），旧版的 deepseek/ cline-free/ cline-pass/
- *  前缀已废弃；`cline-free/` 只是历史通道名，同样按免费处理。 */
-const FREE_CHANNEL_PREFIXES = ['~', 'cline-free/', 'cline-pass/']
-
-/** 判断模型是否为免费通道 */
+ *  1. 真·零扣费免费模型（:free 结尾，以及官方直通 deepseek/deepseek-v4-flash）
+ *  2. 赠金通道模型（上游 ~ 前缀的 -latest 别名）
+ *  3. 历史兼容前缀（cline-free/ cline-pass/） */
 function isFreeClineModel(modelId: string): boolean {
-  return FREE_CHANNEL_PREFIXES.some((p) => modelId.startsWith(p))
+  return (
+    modelId.endsWith(':free') ||
+    modelId.startsWith('~') ||
+    modelId.startsWith('deepseek/') ||
+    modelId.startsWith('cline-free/') ||
+    modelId.startsWith('cline-pass/')
+  )
 }
 
-/** 默认模型（上游官方免费推荐位） */
-export const CLINE_DEFAULT_MODEL = '~deepseek/deepseek-v4-flash-latest'
+/** 默认模型（真·零扣费首选） */
+export const CLINE_DEFAULT_MODEL = 'deepseek/deepseek-v4-flash'
 
 /**
  * 后台「获取模型列表」返回的内置清单。
- *  上游 /v1/models 共 465 个模型，其中免费通道为 `~` 前缀的 18 个 -latest 别名
- *  （2026-10 实测 8 个主力通道全部可正常出流）。此处只内置免费通道，
- *  付费模型需用户自行在后台渠道里添加。
+ * 1. 真·零扣费免费模型（实测扣费 0，不消耗任何赠金）
+ * 2. 赠金通道模型（带 ~ 前缀，消耗初始 $0.50 额度的顶级模型）
  */
 const CLINE_BUILTIN_MODELS = [
+  // ── 1. 真·零扣费免费模型（实测扣费 0，绝不扣账户余额） ──
+  'deepseek/deepseek-v4-flash',
+  'qwen/qwen3.8-27b:free',
+  'google/gemma-4-31b-it:free',
+  'google/gemma-4-26b-a4b-it:free',
+  'nvidia/nemotron-3-super-120b-a12b:free',
+  'nvidia/nemotron-3.5-lightning:free',
+  'nvidia/nemotron-3-ultra-550b-a55b:free',
+  'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+  'poolside/laguna-s-2.1:free',
+  'poolside/laguna-xs-2.1:free',
+  'cohere/north-mini-code:free',
+  'apodex/apodex-1.1-mini:free',
+  'inclusionai/ling-3.0-flash-sante:free',
+  'dots-studio/dots-3-note-preview:free',
+  'liquid/lfm-2.5-2.6b:free',
+  'thinkingmachines/inkling:free',
+  'thinkingmachines/inkling-small:free',
+  'nvidia/nemotron-3.5-content-safety:free',
+
+  // ── 2. 赠金通道模型（带 ~ 前缀，消耗账号 $0.50 赠金的顶级模型） ──
   '~deepseek/deepseek-v4-flash-latest',
   '~deepseek/deepseek-pro-latest',
   '~deepseek/deepseek-flash-latest',
@@ -667,10 +691,14 @@ export async function fetchClineModels(env: Env, refreshToken: string): Promise<
         ? json.models.map((m: any) => String(typeof m === 'string' ? m : (m?.id || ''))).filter(Boolean)
         : []
     if (!list.length) throw new Error('上游返回的模型列表为空')
-    // 免费通道（~ 前缀）排前面，其余保持上游顺序，便于后台勾选
-    const free = list.filter((m) => isFreeClineModel(m))
-    const paid = list.filter((m) => !isFreeClineModel(m))
-    return { success: true, models: [...free, ...paid] }
+    // 排序：
+    // 1. 绝对真免费模型（:free 结尾与 deepseek/deepseek-v4-flash）排第一梯队（实测 0 扣费）
+    const zeroCost = list.filter((m) => m.endsWith(':free') || m === 'deepseek/deepseek-v4-flash')
+    // 2. 赠金通道模型（~ 前缀）排第二梯队（消耗账号 $0.50 赠金的顶级模型）
+    const tilde = list.filter((m) => m.startsWith('~'))
+    // 3. 普通付费模型排后面供用户自由勾选
+    const paid = list.filter((m) => !m.endsWith(':free') && m !== 'deepseek/deepseek-v4-flash' && !m.startsWith('~'))
+    return { success: true, models: [...zeroCost, ...tilde, ...paid] }
   } catch (err) {
     return {
       success: false,
