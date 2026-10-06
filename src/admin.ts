@@ -27,6 +27,7 @@ import { loginWithPassword } from './deepseek-login'
 import {
   startKimiDeviceFlow, pollKimiDeviceFlow, testKimi, fetchKimiModels,
 } from './kimi'
+import { fetchKimiWebModels, testKimiWeb } from './kimi-web'
 import {
   startGrokDeviceFlow, pollGrokDeviceFlow, testGrok,
 } from './grok'
@@ -515,7 +516,7 @@ export async function handleTestModel(c: Context<{ Bindings: Env }>) {
     ? await testOpenCodeModel(provider.baseUrl, enabledKeys, modelId, resolveProviderMirrorUrls(c.env, provider))
     : ptype === 'antigravity'
       ? await testAntigravityRotating(c.env, enabledKeys.map(k => k.key), modelId, provider.project)
-      : ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek', 'codebuddy', 'cline'].includes(ptype)
+      : ['claude', 'codex', 'kimi', 'kimiweb', 'grok', 'qwen', 'deepseek', 'codebuddy', 'cline'].includes(ptype)
         ? await testOAuthProviderRotating(c.env, ptype, enabledKeys.map(k => k.key), modelId, provider.baseUrl, provider.id, provider.region)
         : await testModelConnectionRotating(provider.baseUrl, enabledKeys.map(k => k.key), modelId, provider.apiType)
 
@@ -560,7 +561,7 @@ export async function handleTestKeyNew(c: Context<{ Bindings: Env }>) {
   }
 
   // OAuth 反代渠道: apiKey 即 refresh_token
-  if (providerType && ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek', 'codebuddy', 'cline'].includes(providerType)) {
+  if (providerType && ['claude', 'codex', 'kimi', 'kimiweb', 'grok', 'qwen', 'deepseek', 'codebuddy', 'cline'].includes(providerType)) {
     const r = await testOAuthProvider(c.env, providerType, apiKey, model || OAUTH_DEFAULT_MODELS[providerType], url, providerId)
     return c.json<ApiResponse>({
       success: true,
@@ -705,7 +706,7 @@ export async function handleTestModelNew(c: Context<{ Bindings: Env }>) {
   }
 
   // OAuth 反代渠道: apiKey 即 refresh_token
-  if (providerType && ['claude', 'codex', 'kimi', 'grok', 'qwen', 'deepseek', 'codebuddy', 'cline'].includes(providerType)) {
+  if (providerType && ['claude', 'codex', 'kimi', 'kimiweb', 'grok', 'qwen', 'deepseek', 'codebuddy', 'cline'].includes(providerType)) {
     const r = await testOAuthProvider(c.env, providerType, apiKey, model, url, providerId)
     return c.json<ApiResponse>({
       success: true,
@@ -862,13 +863,14 @@ export async function handleAntigravityQuotaAll(c: Context<{ Bindings: Env }>) {
 
 const OAUTH_PROVIDERS = new Set(['claude', 'codex', 'kimi', 'grok', 'qwen', 'codebuddy', 'cline'])
 // 无 OAuth 流程、凭据需从浏览器复制的渠道类型（deepseek 网页版 userToken）
-const MANUAL_TOKEN_PROVIDERS = new Set(['deepseek'])
+const MANUAL_TOKEN_PROVIDERS = new Set(['deepseek', 'kimiweb'])
 
 /** 测试用默认模型（新增渠道尚未填写模型时） */
 const OAUTH_DEFAULT_MODELS: Record<string, string> = {
   claude: 'claude-sonnet-4-5-20250929',
   codex: 'gpt-5.5',
   kimi: 'kimi-for-coding',
+  kimiweb: 'k3',
   grok: 'grok-4.6',
   qwen: 'coder-model',
   deepseek: 'deepseek-v4-flash',
@@ -984,7 +986,7 @@ export async function handleOAuthModels(c: Context<{ Bindings: Env }>) {
 
   const { baseUrl, region } = body
 
-  if (!token && provider !== 'qwen' && provider !== 'deepseek') {
+  if (!token && provider !== 'qwen' && provider !== 'deepseek' && provider !== 'kimiweb') {
     return c.json<ApiResponse>({ success: false, message: '未找到有效凭据，请先在渠道中添加并保存至少一个 Key，或填写 token' }, 400)
   }
   if (provider === 'claude') {
@@ -993,6 +995,10 @@ export async function handleOAuthModels(c: Context<{ Bindings: Env }>) {
   }
   if (provider === 'kimi') {
     const r = await fetchKimiModels(c.env, token, baseUrl)
+    return c.json<ApiResponse<{ models: string[]; message?: string }>>({ success: r.success, data: { models: r.models, message: r.message }, message: r.message })
+  }
+  if (provider === 'kimiweb') {
+    const r = await fetchKimiWebModels(c.env, token, baseUrl)
     return c.json<ApiResponse<{ models: string[]; message?: string }>>({ success: r.success, data: { models: r.models, message: r.message }, message: r.message })
   }
   if (provider === 'qwen') {
@@ -1029,6 +1035,7 @@ async function testOAuthProvider(
   if (provider === 'claude') return testClaude(env, refreshToken, modelId)
   if (provider === 'codex') return testCodex(env, refreshToken, modelId)
   if (provider === 'kimi') return testKimi(env, refreshToken, modelId, baseUrl)
+  if (provider === 'kimiweb') return testKimiWeb(env, refreshToken, modelId, baseUrl)
   if (provider === 'grok') return testGrok(env, refreshToken, modelId)
   if (provider === 'qwen') return testQwen(env, refreshToken, modelId)
   if (provider === 'deepseek') return testDeepSeek(env, refreshToken, modelId)

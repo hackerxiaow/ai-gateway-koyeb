@@ -203,7 +203,8 @@ ${H('控制台')}
                 <option value="antigravity">Antigravity 反代</option>
                 <option value="claude">Claude OAuth 反代</option>
                 <option value="codex">ChatGPT (Codex) 反代</option>
-                <option value="kimi">Kimi OAuth 反代</option>
+                <option value="kimi">Kimi Coding OAuth 反代</option>
+                <option value="kimiweb">Kimi 网页版反代 (kimi.ai)</option>
                 <option value="grok">Grok OAuth 反代</option>
                 <option value="qwen">Qwen OAuth 反代</option>
                 <option value="deepseek">DeepSeek 反代</option>
@@ -402,7 +403,8 @@ ${H('控制台')}
                     <option value="antigravity" ${p.type === 'antigravity' ? 'selected' : ''}>Antigravity 反代</option>
                     <option value="claude" ${p.type === 'claude' ? 'selected' : ''}>Claude OAuth 反代</option>
                     <option value="codex" ${p.type === 'codex' ? 'selected' : ''}>ChatGPT (Codex) 反代</option>
-                    <option value="kimi" ${p.type === 'kimi' ? 'selected' : ''}>Kimi OAuth 反代</option>
+                    <option value="kimi" ${p.type === 'kimi' ? 'selected' : ''}>Kimi Coding OAuth 反代</option>
+                    <option value="kimiweb" ${p.type === 'kimiweb' ? 'selected' : ''}>Kimi 网页版反代 (kimi.ai)</option>
                     <option value="grok" ${p.type === 'grok' ? 'selected' : ''}>Grok OAuth 反代</option>
                     <option value="qwen" ${p.type === 'qwen' ? 'selected' : ''}>Qwen OAuth 反代</option>
                     <option value="deepseek" ${p.type === 'deepseek' ? 'selected' : ''}>DeepSeek 反代</option>

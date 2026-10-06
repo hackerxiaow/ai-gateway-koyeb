@@ -95,10 +95,12 @@ const OAUTH_DEFAULT_URLS = {
   deepseek: 'https://chat.deepseek.com', 
   zai: 'https://api.z.ai/api/coding/paas/v4', 
   codebuddy: 'https://copilot.tencent.com', 
-  cline: 'https://api.cline.bot' 
+  cline: 'https://api.cline.bot',
+  kimiweb: 'https://www.kimi.ai' 
 }
 function isOauthType(t) { return ['claude', 'codex', 'kimi', 'grok', 'qwen', 'codebuddy', 'cline'].indexOf(t) !== -1 }
 function isDeepseekType(t) { return t === 'deepseek' }
+function isKimiWebType(t) { return t === 'kimiweb' }
 function isZaiType(t) { return t === 'zai' }
 function isCodebuddyType(t) { return t === 'codebuddy' }
 
@@ -1082,7 +1084,7 @@ async function createProv() {
   if (!url && type === 'antigravity') url = 'https://daily-cloudcode-pa.googleapis.com'
   if (!url && type === 'vertex') url = 'https://aiplatform.googleapis.com'
   if (!url && type === 'devin') url = 'https://server.codeium.com'
-  if (!url && (isOauthType(type) || isDeepseekType(type) || isZaiType(type))) url = OAUTH_DEFAULT_URLS[type] || ''
+  if (!url && (isOauthType(type) || isDeepseekType(type) || isZaiType(type) || isKimiWebType(type))) url = OAUTH_DEFAULT_URLS[type] || ''
   if (!url && !isTts) { toast('请填写 API 地址', 'error'); return }
 
   let keys = Array.from(document.querySelectorAll('#akeys .field-row')).map(r => {
@@ -1297,7 +1299,7 @@ async function save(id) {
   if (!url && type === 'antigravity') url = 'https://daily-cloudcode-pa.googleapis.com'
   if (!url && type === 'vertex') url = 'https://aiplatform.googleapis.com'
   if (!url && type === 'devin') url = 'https://server.codeium.com'
-  if (!url && (isOauthType(type) || isDeepseekType(type) || isZaiType(type))) url = OAUTH_DEFAULT_URLS[type] || ''
+  if (!url && (isOauthType(type) || isDeepseekType(type) || isZaiType(type) || isKimiWebType(type))) url = OAUTH_DEFAULT_URLS[type] || ''
   let keys = getKeys(id)
   const vxKeys = type === 'vertex' ? provVertexKeys(id) : null
   if (vxKeys && vxKeys.length) keys = vxKeys.map(k => ({ key: k, enabled: true }))
