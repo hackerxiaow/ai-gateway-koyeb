@@ -22,6 +22,8 @@ export interface Provider {
    *          | cline (cline.bot 网页反代, 凭据为 WorkOS 设备码流程获取的 refreshToken)
    *          | kimiweb (Kimi 网页版反代, 凭据为 www.kimi.ai 的 access_token/refresh_token)
    *          | geminiweb (Gemini 网页版反代, 凭据为 gemini.google.com 的 Cookie)
+   *          | minimaxweb (MiniMax Agent 网页反代, 凭据为 token|agentId|uuid|deviceId|userId)
+   *          | lingxi (中国移动灵犀网页反代, 凭据为 Authorization(Basic)+userId)
    *
    * kimiweb: 与 type=kimi（Kimi Coding，api.kimi.ai/coding）是两套独立体系，凭据不通用。
    *          凭据为浏览器登录 www.kimi.ai 后 Local Storage 里的 access_token(JWT) 或
