@@ -234,19 +234,21 @@ export async function fetchKimiWebModels(
   }
 
   try {
+    // 实测：模型目录接口只吃裸 JSON + application/json，
+    // 加 5 字节帧头或换 application/proto+json 都会被判 415/400。
     const res = await fetch(`${fp.baseUrl}${MODELS_PATH}`, {
       method: 'POST',
       headers: webHeaders(fp, token || 'anonymous', { 'Content-Type': 'application/json' }),
-      body: encodeFrame({}),
+      body: '{}',
       signal: AbortSignal.timeout(30000),
     })
-    const raw = await res.arrayBuffer()
+    const text = await res.text()
     if (!res.ok) {
-      const text = new TextDecoder().decode(raw)
       return { success: false, models: [], message: `HTTP ${res.status}: ${text.slice(0, 200)}` }
     }
-    const catalog = parseFrames(new Uint8Array(raw))
-    const specs = parseModelSpecs(catalog)
+    let catalog: Record<string, any>
+    try { catalog = JSON.parse(text) } catch { return { success: false, models: [], message: '上游返回非 JSON' } }
+    const specs = parseModelSpecs([catalog])
     if (specs.length === 0) {
       return { success: false, models: [], message: '上游未返回模型列表' }
     }
@@ -254,10 +256,6 @@ export async function fetchKimiWebModels(
   } catch (err) {
     return { success: false, models: [], message: (err as Error).message || '拉取失败' }
   }
-}
-
-function parseFrames(bytes: Uint8Array): Array<Record<string, any>> {
-  return createFrameParser().feed(bytes)
 }
 
 /** 从目录响应里抽出模型定义(含 -search 联网别名，与 kimi2api 一致) */
@@ -642,8 +640,7 @@ export async function handleKimiWebRequest(p: OAuthCallParams, baseUrl?: string)
       const upstream = await fetch(`${fp.baseUrl}${CHAT_PATH}`, {
         method: 'POST',
         headers: webHeaders(fp, accessToken, {
-          'Content-Type': 'application/proto+json',
-          'Connect-Protocol-Version': '1',
+          'Content-Type': 'application/connect+json',
         }),
         body,
         signal: AbortSignal.timeout(KIMI_WEB_TIMEOUT_MS),
@@ -731,8 +728,7 @@ export async function testKimiWeb(
     const res = await fetch(`${fp.baseUrl}${CHAT_PATH}`, {
       method: 'POST',
       headers: webHeaders(fp, accessToken, {
-        'Content-Type': 'application/proto+json',
-        'Connect-Protocol-Version': '1',
+        'Content-Type': 'application/connect+json',
       }),
       body: encodeFrame(buildChatPayload(modelId, 'hi', false)),
       signal: AbortSignal.timeout(120000),
