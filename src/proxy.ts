@@ -499,11 +499,11 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
     }
 
     // ===== OAuth 反代渠道 (type = claude / codex / kimi / grok / qwen / deepseek / codebuddy) =====
-    const OAUTH_TYPES = ['claude', 'codex', 'kimi', 'kimiweb', 'grok', 'qwen', 'deepseek', 'codebuddy', 'cline']
+    const OAUTH_TYPES = ['claude', 'codex', 'kimi', 'kimiweb', 'geminiweb', 'grok', 'qwen', 'deepseek', 'codebuddy', 'cline']
     if (OAUTH_TYPES.includes(providerType)) {
       const supported = providerType === 'claude'
         ? ['chat/completions', 'messages']
-        : providerType === 'kimi' || providerType === 'kimiweb' || providerType === 'qwen' || providerType === 'deepseek' || providerType === 'codebuddy' || providerType === 'cline'
+        : providerType === 'kimi' || providerType === 'kimiweb' || providerType === 'geminiweb' || providerType === 'qwen' || providerType === 'deepseek' || providerType === 'codebuddy' || providerType === 'cline'
           ? ['chat/completions']
           : ['chat/completions', 'responses']
       if (!supported.includes(subPath)) {
@@ -542,6 +542,10 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
       if (providerType === 'kimiweb') {
         const { handleKimiWebRequest } = await import('./kimi-web')
         return handleKimiWebRequest(oauthParams, provider.baseUrl)
+      }
+      if (providerType === 'geminiweb') {
+        const { handleGeminiWebRequest } = await import('./gemini-web')
+        return handleGeminiWebRequest(oauthParams)
       }
       if (providerType === 'qwen') {
         const { handleQwenRequest } = await import('./qwen')

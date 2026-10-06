@@ -20,6 +20,17 @@ export interface Provider {
    *          | claude | codex | kimi | grok | qwen | codebuddy (OAuth 反代, 复刻 CLIProxyAPI)
    *          | deepseek (官方 API Key / 网页 userToken 反代) | zai (Z.AI 预设, 缺省 openai)
    *          | cline (cline.bot 网页反代, 凭据为 WorkOS 设备码流程获取的 refreshToken)
+   *          | kimiweb (Kimi 网页版反代, 凭据为 www.kimi.ai 的 access_token/refresh_token)
+   *          | geminiweb (Gemini 网页版反代, 凭据为 gemini.google.com 的 Cookie)
+   *
+   * kimiweb: 与 type=kimi（Kimi Coding，api.kimi.ai/coding）是两套独立体系，凭据不通用。
+   *          凭据为浏览器登录 www.kimi.ai 后 Local Storage 里的 access_token(JWT) 或
+   *          refresh_token，每行一个账号自动轮换；refresh_token 由网关自动续期。
+   *
+   * geminiweb: 与 type=antigravity（Google 官方 Antigravity OAuth）是两套体系，凭据不通用。
+   *            凭据为浏览器登录 gemini.google.com 后的 Cookie（__Secure-1PSID / __Secure-3PSID /
+   *            SAPISID），每行一个账号轮换；网关用 SAPISIDHASH 做鉴权，BL(build label) 自动抓取。
+   *            不配 Cookie 也能走匿名模式（模型受限、易 429）。
    *
    * codebuddy: 腾讯 CodeBuddy/WorkBuddy 账号反代（凭据为 refresh_token，上游 /v2/chat/completions
    *            强制 stream，非流式由网关本地聚合）。区域由 region 字段显式指定，
