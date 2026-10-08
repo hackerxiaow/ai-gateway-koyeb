@@ -19,6 +19,7 @@
 
 import type { Env } from './types'
 import { getKV } from './storage-adapter'
+import { rawFetch } from './gemini-socket'
 import {
   type OAuthCallParams,
   oauthErrorResponse,
@@ -157,7 +158,8 @@ async function fetchLatestBL(cookie?: string): Promise<string> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 8000)
   try {
-    const resp = await fetch(BL_PAGE_URL, { headers, signal: ctrl.signal })
+    // /app 页面同样走裸 socket：标准 fetch 会被重定向到人机验证页
+    const resp = await rawFetch(BL_PAGE_URL, { headers, timeoutMs: 8000, signal: ctrl.signal })
     const html = await resp.text()
     // 登录态页面直接暴露 bard-web-server 标签；匿名页只有 cfb2h 字段（实测同样能当 bl 用）
     const primary = html.match(BL_REGEX_PRIMARY)
@@ -460,10 +462,12 @@ async function callUpstream(
     if (account.cookie) headers['Cookie'] = account.cookie
     if (account.sapisid) headers['Authorization'] = await makeSapisidHash(account.sapisid)
 
-    const resp = await fetch(buildStreamUrl(bl, accountPrefix(account.cookie)), {
+    // 走裸 socket 自拼 HTTP/1.1：标准 fetch 的 HTTP/2 + gzip 特征头会被 Gemini 判为自动化流量
+    const resp = await rawFetch(buildStreamUrl(bl, accountPrefix(account.cookie)), {
       method: 'POST',
       headers,
       body: buildFormBody(prompt, mode, think),
+      timeoutMs: GEMINI_TIMEOUT_MS,
       signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
     })
 
