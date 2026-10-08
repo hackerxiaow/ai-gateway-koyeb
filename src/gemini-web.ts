@@ -310,6 +310,7 @@ function createGeminiSseStream(
   let previous = ''
   let roleSent = false
   let finished = false
+  let toolMode = false
 
   const send = (delta: Record<string, any>, finish: string | null = null, withUsage = false) => {
     const chunk: Record<string, any> = {
@@ -334,7 +335,20 @@ function createGeminiSseStream(
   const finish = (reason: string | null) => {
     if (finished) return
     finished = true
-    send({}, reason || 'stop', true)
+    // tool_calls 是原子的：正文流式吐完后，统一把 ```tool_call``` 块发成一个 delta
+    const parsed = parseToolCallBlocks(previous)
+    if (parsed.toolCalls.length) {
+      if (!roleSent) {
+        roleSent = true
+        send({ role: 'assistant', content: '' })
+      }
+      parsed.toolCalls.forEach((tc, i) => {
+        send({ tool_calls: [{ index: i, id: tc.id, type: 'function', function: tc.function }] })
+      })
+      send({}, 'tool_calls', true)
+    } else {
+      send({}, reason || 'stop', true)
+    }
     controller.enqueue(encoder.encode('data: [DONE]\n\n'))
     if (onUsage) onUsage({ promptTokens: 0, completionTokens: Math.ceil(previous.length / 4) })
     try { controller.close() } catch { /* already closed */ }
@@ -347,6 +361,12 @@ function createGeminiSseStream(
     const delta = full.startsWith(previous) ? full.slice(previous.length) : full
     previous = full
     if (!delta) return
+    // 一旦模型开始输出 ```tool_call，剩余内容不能当正文吐出去，改为收尾时统一解析
+    if (toolMode) return
+    if (previous.includes('```tool_call')) {
+      toolMode = true
+      return
+    }
     if (!roleSent) {
       roleSent = true
       send({ role: 'assistant', content: '' })
@@ -399,6 +419,68 @@ interface OpenAIMessage {
   role: string
   content: any
   name?: string
+  tool_calls?: any[]
+  tool_call_id?: string
+}
+
+interface ToolDef {
+  name: string
+  description?: string
+  parameters?: any
+}
+
+/**
+ * Gemini 网页私有协议没有暴露原生的 functionDeclarations 通道，
+ * 所以按上游 worker.js 的做法：把工具声明渲染成一段文本提示，
+ * 模型回 ```tool_call``` 代码块，再从文本里解析回 OpenAI tool_calls。
+ */
+function extractToolDefs(tools: any): ToolDef[] {
+  const out: ToolDef[] = []
+  if (!Array.isArray(tools)) return out
+  for (const t of tools) {
+    const fn = t?.function || t
+    if (!fn || typeof fn.name !== 'string' || !fn.name) continue
+    out.push({ name: fn.name, description: fn.description, parameters: fn.parameters })
+  }
+  return out
+}
+
+function toolChoiceInstruction(toolChoice: any, toolDefs: ToolDef[]): string {
+  const tc = typeof toolChoice === 'object' && toolChoice ? toolChoice : { type: toolChoice }
+  const mode = String(tc?.type || 'auto').toLowerCase()
+  const names = Array.isArray(tc?.function?.name) ? tc.function.name : (tc?.function?.name ? [tc.function.name] : [])
+  if (mode === 'none') return '\n\nIMPORTANT: Do NOT call any tools. Respond with text only.'
+  if (mode === 'required' || mode === 'any') {
+    if (names.length) {
+      const list = names.map((n: string) => `"${n}"`).join(', ')
+      return `\n\nIMPORTANT: You MUST call one of these tools: ${list}. Do not respond with text only.`
+    }
+    return '\n\nIMPORTANT: You MUST call at least one tool. Do not respond with text only.'
+  }
+  if (names.length) {
+    const list = names.map((n: string) => `"${n}"`).join(', ')
+    return `\n\nIMPORTANT: You may only call these tools: ${list}.`
+  }
+  return ''
+}
+
+function buildToolPrompt(toolDefs: ToolDef[], toolChoice: any): string {
+  const spec = JSON.stringify(toolDefs.map((d) => ({ name: d.name, description: d.description || '', parameters: d.parameters || {} })), null, 2)
+  return (
+    '# Tool Use\n\n' +
+    'You can call the following tools to help accomplish tasks. ' +
+    'These tools connect to the user\'s local environment and will execute when called.\n\n' +
+    'Call format (use this exact format):\n' +
+    '```tool_call\n' +
+    '{"name": "<tool_name>", "arguments": {<arguments>}}\n' +
+    '```\n\n' +
+    'When calling tools:\n' +
+    '- Output ONLY the tool_call block(s), nothing else\n' +
+    '- You may call multiple tools with multiple blocks\n' +
+    '- After receiving a [Tool result for ...], use that data to answer the user\n\n' +
+    `Available tools:\n${spec}` +
+    toolChoiceInstruction(toolChoice, toolDefs)
+  )
 }
 
 function messageText(content: any): string {
@@ -413,17 +495,81 @@ function messageText(content: any): string {
   return String(content)
 }
 
-function messagesToPrompt(messages: OpenAIMessage[]): string {
+function messagesToPrompt(
+  messages: OpenAIMessage[],
+  toolDefs: ToolDef[] = [],
+  toolChoice?: any,
+): string {
   const parts: string[] = []
   for (const m of messages) {
     const text = messageText(m.content).trim()
-    if (!text) continue
-    if (m.role === 'system') parts.push(`[System instruction]: ${text}`)
-    else if (m.role === 'assistant') parts.push(`[Assistant]: ${text}`)
-    else if (m.role === 'tool') parts.push(`[Tool result for ${m.name || 'tool'}]: ${text}`)
-    else parts.push(text)
+    if (m.role === 'system') {
+      if (text) parts.push(`[System instruction]: ${text}`)
+      continue
+    }
+    if (m.role === 'tool') {
+      // 工具结果必须保留：模型靠它才能接着回答
+      const nm = m.name || m.tool_call_id || 'tool'
+      parts.push(`[Tool result for ${nm}]: ${text}`)
+      continue
+    }
+    if (m.role === 'assistant') {
+      // 助手历史里的 tool_calls 要按 tool_call 代码块回放，否则模型不知道调过什么
+      const blocks = Array.isArray(m.tool_calls) && m.tool_calls.length
+        ? m.tool_calls.map((tc: any) => {
+            const fn = tc?.function || {}
+            const args = typeof fn.arguments === 'string' && fn.arguments ? fn.arguments : '{}'
+            return '```tool_call\n{"name": "' + String(fn.name || '') + '", "arguments": ' + args + '}\n```'
+          }).join('\n')
+        : ''
+      const head = text || ''
+      parts.push(blocks ? `[Assistant]: ${head}\n${blocks}`.trim() : `[Assistant]: ${head}`.trim())
+      continue
+    }
+    if (text) parts.push(text)
   }
-  return parts.join('\n\n')
+
+  const head = toolDefs.length ? buildToolPrompt(toolDefs, toolChoice) : ''
+  const body = parts.filter((p) => p).join('\n\n')
+  return head ? (body ? `${head}\n\n${body}` : head) : body
+}
+
+// =====================================================================
+// 工具调用：解析模型回传的 ```tool_call``` 代码块
+// =====================================================================
+
+interface ParsedToolCall {
+  id: string
+  type: 'function'
+  function: { name: string; arguments: string }
+}
+
+function parseToolCallBlocks(text: string): { text: string; toolCalls: ParsedToolCall[] } {
+  const toolCalls: ParsedToolCall[] = []
+  const cleanParts: string[] = []
+  const re = /```tool_call\s*\n([\s\S]*?)\n```/g
+  let lastEnd = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    cleanParts.push(text.slice(lastEnd, m.index))
+    lastEnd = m.index + m[0].length
+    try {
+      const data = JSON.parse(m[1].trim())
+      if (data?.name === undefined) continue
+      toolCalls.push({
+        id: `call_${randomId()}`,
+        type: 'function',
+        function: {
+          name: String(data.name),
+          arguments: JSON.stringify(data.arguments ?? {}),
+        },
+      })
+    } catch {
+      // 格式错误的块直接跳过，不影响其余内容
+    }
+  }
+  cleanParts.push(text.slice(lastEnd))
+  return { text: cleanParts.join('').trim(), toolCalls }
 }
 
 // =====================================================================
@@ -508,7 +654,8 @@ export async function handleGeminiWebRequest(p: OAuthCallParams): Promise<Respon
   }
 
   const messages = Array.isArray(p.body?.messages) ? (p.body.messages as OpenAIMessage[]) : []
-  const prompt = messagesToPrompt(messages)
+  const toolDefs = extractToolDefs(p.body?.tools)
+  const prompt = messagesToPrompt(messages, toolDefs, p.body?.tool_choice)
   if (!prompt) {
     return oauthErrorResponse('messages 内容为空，无法转发', 400, 'invalid_request_error')
   }
@@ -575,6 +722,13 @@ export async function handleGeminiWebRequest(p: OAuthCallParams): Promise<Respon
       if (full) content = full
     }
     const completionTokens = Math.ceil(content.length / 4)
+    // 模型可能回的是 ```tool_call``` 代码块，剥出来转成 OpenAI tool_calls
+    const parsed = parseToolCallBlocks(content)
+    const message: Record<string, any> = {
+      role: 'assistant',
+      content: parsed.text ? cleanText(parsed.text) : null,
+    }
+    if (parsed.toolCalls.length) message.tool_calls = parsed.toolCalls
     const json = {
       id: `chatcmpl-geminiweb-${randomId()}`,
       object: 'chat.completion',
@@ -582,8 +736,8 @@ export async function handleGeminiWebRequest(p: OAuthCallParams): Promise<Respon
       model: p.requestedModel,
       choices: [{
         index: 0,
-        message: { role: 'assistant', content: cleanText(content) || null },
-        finish_reason: 'stop',
+        message,
+        finish_reason: parsed.toolCalls.length ? 'tool_calls' : 'stop',
       }],
       usage: { prompt_tokens: 0, completion_tokens: completionTokens, total_tokens: completionTokens },
     }
