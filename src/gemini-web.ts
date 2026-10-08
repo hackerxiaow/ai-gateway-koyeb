@@ -35,14 +35,7 @@ const BL_FALLBACK = 'boq_gemini-web-uiserver_20261007.01_p0'
 const BL_TTL_MS = 60 * 60 * 1000
 const GEMINI_TIMEOUT_MS = 120000
 
-const SESSION_KV_KEY = 'geminiweb:session'
-
-/**
- * /app 页面 WIZ_global_data 里的反 CSRF 令牌（"SNlM0e":"<token>:<ts>"）。
- * Google 新版前端要求它以 at= 形式随请求体提交，缺失时 StreamGenerate 返回
- * 400 且错误载荷里带 ["xsrf", ...]。缺页时降级为不带 at，尽量不影响旧行为。
- */
-const AT_REGEX_WIZ = /"SNlM0e"\s*:\s*"([^"]+)"/
+const BL_KV_KEY = 'geminiweb:bl'
 
 // ===== 浏览器指纹池（对齐 worker.js 的多指纹轮换） =====
 const UA_POOL = [
@@ -152,13 +145,7 @@ async function makeSapisidHash(sapisid: string): Promise<string> {
 // BL(build label) 抓取与缓存
 // =====================================================================
 
-interface WebSession {
-  bl: string
-  at: string
-}
-
-/** 从 /app 页面同时解析 bl 与 at；抓不到就各自降级 */
-async function fetchLatestSession(cookie?: string): Promise<WebSession> {
+async function fetchLatestBL(cookie?: string): Promise<string> {
   const headers: Record<string, string> = {
     'User-Agent': UA_POOL[Math.floor(Math.random() * UA_POOL.length)],
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -172,41 +159,30 @@ async function fetchLatestSession(cookie?: string): Promise<WebSession> {
   try {
     const resp = await fetch(BL_PAGE_URL, { headers, signal: ctrl.signal })
     const html = await resp.text()
-
-    // 反 CSRF 令牌：登录态页面在 WIZ_global_data 里
-    const at = html.match(AT_REGEX_WIZ)
-
     // 登录态页面直接暴露 bard-web-server 标签；匿名页只有 cfb2h 字段（实测同样能当 bl 用）
     const primary = html.match(BL_REGEX_PRIMARY)
-    if (primary) return { bl: primary[0], at: at ? at[1] : '' }
+    if (primary) return primary[0]
     const cfb2h = html.match(BL_REGEX_CFB2H)
-    const bl = cfb2h && cfb2h[1] ? cfb2h[1] : BL_FALLBACK
-    return { bl, at: at ? at[1] : '' }
+    if (cfb2h && cfb2h[1]) return cfb2h[1]
+    return BL_FALLBACK
   } catch {
-    return { bl: BL_FALLBACK, at: '' }
+    return BL_FALLBACK
   } finally {
     clearTimeout(timer)
   }
 }
 
-async function getSession(env: Env, cookie?: string, force = false): Promise<WebSession> {
+async function getBL(env: Env, cookie?: string, force = false): Promise<string> {
   const kv = getKV(env)
   if (!force) {
-    const cached = await kv.get(SESSION_KV_KEY)
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached) as WebSession
-        if (parsed && parsed.bl) return { bl: parsed.bl, at: parsed.at || '' }
-      } catch {
-        // 缓存格式异常，按未命中处理
-      }
-    }
+    const cached = await kv.get(BL_KV_KEY)
+    if (cached) return cached
   }
-  const session = await fetchLatestSession(cookie)
-  await kv.put(SESSION_KV_KEY, JSON.stringify(session), { expirationTtl: Math.floor(BL_TTL_MS / 1000) }).catch(() => {
+  const bl = await fetchLatestBL(cookie)
+  await kv.put(BL_KV_KEY, bl, { expirationTtl: Math.floor(BL_TTL_MS / 1000) }).catch(() => {
     // KV 不可用时退化为每次重抓，不影响功能
   })
-  return session
+  return bl
 }
 
 // =====================================================================
@@ -221,7 +197,7 @@ function generateUUID(): string {
   })
 }
 
-function buildFormBody(prompt: string, mode: number, think: number, at?: string): string {
+function buildFormBody(prompt: string, mode: number, think: number): string {
   const inner: unknown[] = new Array(80).fill(null)
   inner[0] = [prompt, 0, null, null, null, null, 0]  // 用户消息
   inner[1] = ['en']                                  // 语言
@@ -243,8 +219,6 @@ function buildFormBody(prompt: string, mode: number, think: number, at?: string)
 
   const params = new URLSearchParams()
   params.append('f.req', JSON.stringify([null, JSON.stringify(inner)]))
-  // 反 CSRF 令牌随请求体提交（对齐上游 goehou/gemini-web2api 的 at= 约定）
-  if (at) params.append('at', at)
   return params.toString()
 }
 
@@ -298,9 +272,9 @@ function extractLineText(line: string): string | null {
 
 /** 上游明确报错时（BardErrorInfo）抛出可读错误 */
 function checkUpstreamError(raw: string): string | null {
-  // xsrf 失效：令牌没抓到、被 Google 风控拦了页面，或页面结构又变了
+  // 该错误载荷在出口 IP 被 Google 判定为自动化流量时出现，与 Cookie、bl 无关
   if (/"xsrf"/.test(raw)) {
-    return 'Gemini 要求反 CSRF 令牌但未能获取（/app 页面抓取被风控或结构变化），请更换部署区域或稍后重试'
+    return 'Gemini 拒绝请求（xsrf）：通常是出口 IP 被判定为自动化流量，换住宅/非机房出口或稍后重试'
   }
   const m = raw.match(/BardErrorInfo\s*\[(\d+)\]/)
   if (m) return `Gemini 上游拒绝请求: BardErrorInfo [${m[1]}]`
@@ -468,7 +442,7 @@ async function callUpstream(
   think: number,
   account: Account,
 ): Promise<UpstreamResult> {
-  let session = await getSession(env, account.cookie || undefined)
+  let bl = await getBL(env, account.cookie || undefined)
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const headers: Record<string, string> = {
@@ -486,10 +460,10 @@ async function callUpstream(
     if (account.cookie) headers['Cookie'] = account.cookie
     if (account.sapisid) headers['Authorization'] = await makeSapisidHash(account.sapisid)
 
-    const resp = await fetch(buildStreamUrl(session.bl, accountPrefix(account.cookie)), {
+    const resp = await fetch(buildStreamUrl(bl, accountPrefix(account.cookie)), {
       method: 'POST',
       headers,
-      body: buildFormBody(prompt, mode, think, session.at),
+      body: buildFormBody(prompt, mode, think),
       signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
     })
 
@@ -501,10 +475,9 @@ async function callUpstream(
 
     // 400/405 = BL 过期，强制刷新后重试一次（不消耗账号轮换）
     if ((resp.status === 405 || resp.status === 400) && attempt === 0) {
-      const fresh = await getSession(env, account.cookie || undefined, true)
-      // 只有真的换到新值才重试，否则会把同一个失败重跑一遍
-      if (fresh && (fresh.bl !== session.bl || fresh.at !== session.at)) {
-        session = fresh
+      const fresh = await getBL(env, account.cookie || undefined, true)
+      if (fresh && fresh !== bl) {
+        bl = fresh
         continue
       }
     }
