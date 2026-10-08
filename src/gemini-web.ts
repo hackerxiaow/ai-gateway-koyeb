@@ -275,8 +275,14 @@ function extractLineText(line: string): string | null {
 /** 上游明确报错时（BardErrorInfo）抛出可读错误 */
 function checkUpstreamError(raw: string): string | null {
   // 该错误载荷在出口 IP 被 Google 判定为自动化流量时出现，与 Cookie、bl 无关
+  // xsrf 载荷的两种成因（实测均会返回它，且无法在单次响应里区分）：
+  // 1) 渠道 Cookie 会话未登录/已被登出 —— 最常见。Google 只对登录态下发
+  //    SNlM0e，会话失效后 StreamGenerate 就会要 xsrf；此时 /app 抓得到但页面
+  //    没有 SNlM0e。需要重新登录 Google 重新抓 Cookie。
+  // 2) 出口 IP 被判定为自动化流量 —— 换住宅/非机房出口可解。
   if (/"xsrf"/.test(raw)) {
-    return 'Gemini 拒绝请求（xsrf）：通常是出口 IP 被判定为自动化流量，换住宅/非机房出口或稍后重试'
+    return 'Gemini 拒绝请求（xsrf）。常见原因按概率排序：① 渠道 Cookie 会话已失效/未登录' +
+      '（重新登录 gemini.google.com 抓新 Cookie 即可）；② 出口 IP 被判定为自动化流量（换住宅/非机房出口）。'
   }
   const m = raw.match(/BardErrorInfo\s*\[(\d+)\]/)
   if (m) return `Gemini 上游拒绝请求: BardErrorInfo [${m[1]}]`
