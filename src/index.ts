@@ -88,9 +88,6 @@ app.get('/admin/login', async (c) => renderLoginPage(c))
 app.post('/admin/login', handleLogin)
 app.get('/admin/logout', handleLogout)
 
-// ===== 健康检查（公开无鉴权，供探活使用） =====
-app.get('/api/ping', (c) => c.text('ok'))
-
 // ===== 管理后台（需 Session 验证） =====
 app.use('/admin/*', adminAuthMiddleware)
 
