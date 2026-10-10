@@ -3,7 +3,6 @@ import { getProviders } from './storage'
 import { SITE_CONFIG } from './config'
 import type { Env } from './types'
 import { CSS_CONTENT } from './pages.css'
-import { cssTag } from './assets'
 import { getExternalOrigin } from './request-utils'
 import { icon, renderSiteFooter, withIconSprite } from './shared.js'
 
@@ -25,7 +24,7 @@ const H = (title: string) => `
   <meta name="theme-color" content="#f8fafc">
   <title>${title} — ${SITE_CONFIG.title}</title>
   <link rel="icon" href="${SITE_CONFIG.favicon}">
-  ${cssTag(CSS_CONTENT)}
+  <style>${CSS_CONTENT}</style>
 </head>`
 
 export async function renderHomePage(c: Context<{ Bindings: Env }>, isLoggedIn: boolean) {
