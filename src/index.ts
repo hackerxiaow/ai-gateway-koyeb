@@ -110,6 +110,28 @@ app.get('/admin/api/selftest/delay', (c) => {
   })
 })
 
+// 部署后自检(流式): 每 tick 吐一个字节, 用于区分「总时长上限」与「无数据超时」
+app.get('/admin/api/selftest/stream', (c) => {
+  const ms = Math.min(Math.max(Number(c.req.query('ms')) || 0, 0), 900_000)
+  const tickMs = Math.min(Math.max(Number(c.req.query('tick')) || 1000, 100), 10_000)
+  const startedAt = Date.now()
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const enc = new TextEncoder()
+      let sent = 0
+      const timer = setInterval(() => {
+        controller.enqueue(enc.encode(`tick ${sent++} @${Date.now() - startedAt}ms\n`))
+        if (Date.now() - startedAt >= ms) {
+          clearInterval(timer)
+          controller.enqueue(enc.encode(`done actualMs=${Date.now() - startedAt}\n`))
+          controller.close()
+        }
+      }, tickMs)
+    },
+  })
+  return new Response(stream, { headers: { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' } })
+})
+
 // 提供商 CRUD
 app.get('/admin/api/providers', handleGetProviders)
 app.get('/admin/api/providers/:id/keys', handleListProviderKeys)
