@@ -1617,8 +1617,13 @@ textarea {
   letter-spacing: 0.05em;
 }
 
-.admin-rail.collapsed .admin-rail__brand span:last-child {
-  display: none;
+.admin-rail.collapsed .admin-rail__brand > span:not(.brand__mark) {
+  display: none !important;
+}
+
+.admin-rail.collapsed .admin-rail__brand .brand__mark,
+.admin-rail.collapsed .admin-rail__brand .svg-icon {
+  display: inline-flex !important;
 }
 
 .admin-nav {
