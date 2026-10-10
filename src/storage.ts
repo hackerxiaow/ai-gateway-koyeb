@@ -12,10 +12,28 @@ const PROVIDERS_CACHE_TTL_MS = 30_000
 
 let providersCache: Provider[] | null = null
 let providersCacheAt = 0
+let providersRefreshing = false
 
 export async function getProviders(env: Env): Promise<Provider[]> {
   const now = Date.now()
   if (providersCache && now - providersCacheAt < PROVIDERS_CACHE_TTL_MS) return providersCache
+  // stale-while-revalidate: 缓存过期时先返回旧数据, 后台静默刷新。
+  // 一次全量读取是 MB 级 JSON(万级 Key)跨公网拉取, 同步等待会把后台页/代理请求
+  // 的 TTFB 拖高数秒; 改造后只有「实例起来后的第一个请求」才同步读一次。
+  // 写路径(readProvidersFresh)依旧强制直读, 多实例一致性窗口不变。
+  if (providersCache) {
+    if (!providersRefreshing) {
+      providersRefreshing = true
+      getKV(env).get(KV_KEYS.PROVIDERS)
+        .then((data) => {
+          providersCache = data ? (JSON.parse(data) as Provider[]) : []
+          providersCacheAt = Date.now()
+        })
+        .catch(() => {})
+        .finally(() => { providersRefreshing = false })
+    }
+    return providersCache
+  }
   const data = await getKV(env).get(KV_KEYS.PROVIDERS)
   const parsed: Provider[] = data ? (JSON.parse(data) as Provider[]) : []
   providersCache = parsed
@@ -98,6 +116,7 @@ export async function setAdminCredentials(env: Env, username: string, passwordHa
 
 /** 强制登出所有会话(导入/恢复后调用) */
 export async function deleteAllSessions(env: Env): Promise<void> {
+  sessionMem.clear()
   const store = getKV(env)
   let cursor: string | undefined
   do {
@@ -109,6 +128,12 @@ export async function deleteAllSessions(env: Env): Promise<void> {
 
 // ===== Session 管理 =====
 
+// 进程内会话缓存: 管理后台每个请求都要过 adminAuthMiddleware → getSession,
+// 直查 PG 一次往返在跨公网链路上要百余毫秒。内存缓存 5 分钟, 登出/删除即失效,
+// 存储侧会话被外部清掉时最多滞后 5 分钟(与 providers 缓存的不一致窗口同级)。
+const SESSION_MEM_TTL_MS = 5 * 60_000
+const sessionMem = new Map<string, { session: Session; cachedAt: number }>()
+
 export async function createSession(env: Env, username: string, ttlSeconds: number): Promise<string> {
   const sessionId = crypto.randomUUID()
   const session: Session = {
@@ -118,21 +143,33 @@ export async function createSession(env: Env, username: string, ttlSeconds: numb
   await getKV(env).put(KV_KEYS.SESSION_PREFIX + sessionId, JSON.stringify(session), {
     expirationTtl: ttlSeconds,
   })
+  sessionMem.set(sessionId, { session, cachedAt: Date.now() })
   return sessionId
 }
 
 export async function getSession(env: Env, sessionId: string): Promise<Session | null> {
+  const now = Date.now()
+  const hit = sessionMem.get(sessionId)
+  if (hit && now - hit.cachedAt < SESSION_MEM_TTL_MS) {
+    if (hit.session.expiresAt < now) {
+      await deleteSession(env, sessionId)
+      return null
+    }
+    return hit.session
+  }
   const data = await getKV(env).get(KV_KEYS.SESSION_PREFIX + sessionId)
   if (!data) return null
   const session: Session = JSON.parse(data)
-  if (session.expiresAt < Date.now()) {
+  if (session.expiresAt < now) {
     await deleteSession(env, sessionId)
     return null
   }
+  sessionMem.set(sessionId, { session, cachedAt: now })
   return session
 }
 
 export async function deleteSession(env: Env, sessionId: string): Promise<void> {
+  sessionMem.delete(sessionId)
   await getKV(env).delete(KV_KEYS.SESSION_PREFIX + sessionId)
 }
 

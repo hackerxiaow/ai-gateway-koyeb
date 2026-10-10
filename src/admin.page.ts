@@ -4,6 +4,7 @@ import { getCodexUpstreamRelay } from './codex'
 import { SITE_CONFIG, OPENCODE_DEFAULT_URL } from './config'
 import type { Env, Provider } from './types'
 import { CSS_CONTENT } from './pages.css'
+import { cssTag, scriptTag, ASSET_SHARED_JS, ASSET_ADMIN_JS } from './assets'
 import { getExternalOrigin } from './request-utils'
 import { CLIENT_DYNAMIC_ICONS, icon, SHARED_JS, renderSiteFooter, withIconSprite } from './shared.js'
 import { storageTypeLabel } from './storage-adapter'
@@ -55,7 +56,7 @@ const H = (title: string) => `
   <meta name="theme-color" content="#f8fafc">
   <title>${title} — ${SITE_CONFIG.title}</title>
   <link rel="icon" href="${SITE_CONFIG.favicon}">
-  <style>${CSS_CONTENT}</style>
+  ${cssTag(CSS_CONTENT)}
 </head>`
 
 /**
@@ -667,11 +668,12 @@ ${H('控制台')}
 
 <div id="modal" class="modal-o hd" role="presentation" onclick="if(event.target===this)closeM()"><div class="modal" id="mc" role="dialog" aria-modal="true" aria-live="polite"></div></div>
 
-<script>${SHARED_JS}
-let AG_CHANNELS = ${JSON.stringify(agChannels).replace(/</g, '\\u003c')}
-const AZURE_VOICE_IDS = ${JSON.stringify(AZURE_TTS_VOICES.map((v) => v.id))}
-${ADMIN_CLIENT_SCRIPT}
-</script>
+<!-- 页面级数据（服务端注入，必须内联） -->
+<script>var AG_CHANNELS = ${JSON.stringify(agChannels).replace(/</g, '\\u003c')}
+var AZURE_VOICE_IDS = ${JSON.stringify(AZURE_TTS_VOICES.map((v) => v.id))}</script>
+<!-- 客户端脚本外链：可缓存、可压缩，不再随每次页面请求重传 -->
+${scriptTag(ASSET_SHARED_JS, SHARED_JS)}
+${scriptTag(ASSET_ADMIN_JS, ADMIN_CLIENT_SCRIPT)}
 </body></html>`
   return c.html(withIconSprite(page, CLIENT_DYNAMIC_ICONS))
 }
