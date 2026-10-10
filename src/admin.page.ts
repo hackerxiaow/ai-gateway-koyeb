@@ -244,17 +244,17 @@ ${H('控制台')}
       </a>
     </div>
     <nav class="admin-nav">
-      <a class="admin-nav__link is-active" href="#overview">${icon('overview', '', 16)}<span>概览</span></a>
-      <a class="admin-nav__link" href="#providers">${icon('server', '', 16)}<span>渠道</span><b>${providers.length}</b></a>
-      <a class="admin-nav__link" href="#quota">${icon('gauge', '', 16)}<span>额度</span><b>${agAccountCount}</b></a>
-      <a class="admin-nav__link" href="#proxy-keys">${icon('key', '', 16)}<span>令牌</span><b>${proxyKeys.length}</b></a>
-      <a class="admin-nav__link" href="#usage">${icon('chart', '', 16)}<span>用量</span></a>
-      <a class="admin-nav__link" href="#backup">${icon('database', '', 16)}<span>备份</span></a>
+      <a class="admin-nav__link is-active" href="#overview" title="概览">${icon('overview', '', 16)}<span>概览</span></a>
+      <a class="admin-nav__link" href="#providers" title="渠道">${icon('server', '', 16)}<span>渠道</span><b>${providers.length}</b></a>
+      <a class="admin-nav__link" href="#quota" title="额度">${icon('gauge', '', 16)}<span>额度</span><b>${agAccountCount}</b></a>
+      <a class="admin-nav__link" href="#proxy-keys" title="令牌">${icon('key', '', 16)}<span>令牌</span><b>${proxyKeys.length}</b></a>
+      <a class="admin-nav__link" href="#usage" title="用量">${icon('chart', '', 16)}<span>用量</span></a>
+      <a class="admin-nav__link" href="#backup" title="备份">${icon('database', '', 16)}<span>备份</span></a>
     </nav>
     <div class="admin-rail__foot">
       <button class="admin-nav__link rail-toggle" type="button" onclick="toggleRail()" title="收缩侧边栏">${icon('anglesLeft', '', 16)}<span>收缩侧边栏</span></button>
-      <a href="/" class="admin-nav__link">${icon('arrowLeft', '', 16)}<span>返回首页</span></a>
-      <a href="/admin/logout" class="admin-nav__link">${icon('signOut', '', 16)}<span>退出登录</span></a>
+      <a href="/" class="admin-nav__link" title="返回首页">${icon('arrowLeft', '', 16)}<span>返回首页</span></a>
+      <a href="/admin/logout" class="admin-nav__link" title="退出登录">${icon('signOut', '', 16)}<span>退出登录</span></a>
     </div>
   </aside>
 
