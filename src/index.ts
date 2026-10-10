@@ -101,6 +101,15 @@ app.get('/admin', async (c) => {
 // 系统状态
 app.get('/admin/api/status', handleStatus)
 
+// 部署后自检: 拉长单次请求, 实测平台单请求时长上限是否生效
+app.get('/admin/api/selftest/delay', (c) => {
+  const ms = Math.min(Math.max(Number(c.req.query('ms')) || 0, 0), 600_000)
+  const startedAt = Date.now()
+  return new Promise<Response>((resolve) => {
+    setTimeout(() => resolve(c.json({ success: true, data: { requestedMs: ms, actualMs: Date.now() - startedAt } })), ms)
+  })
+})
+
 // 提供商 CRUD
 app.get('/admin/api/providers', handleGetProviders)
 app.get('/admin/api/providers/:id/keys', handleListProviderKeys)
