@@ -1,114 +1,176 @@
 export const CSS_CONTENT = `
 /* ==========================================================================
-   AI GATEWAY - Modern Fintech Design System (Linear / Stripe / Vercel Aesthetic)
+   AI GATEWAY — 设计令牌 (Design Tokens)
+   对齐 design.md 的 modern-minimal 系统：冷静的工程化画布、精密发丝线、
+   单一钴蓝信号色、代码即内容。改样式前先读 design.md。
    ========================================================================== */
 
 :root {
-  /* 基底与表面 */
-  --bg-page: #f8fafc;
-  --bg-surface: #ffffff;
-  --bg-surface-subtle: #f1f5f9;
-  --bg-surface-hover: #f8fafc;
-  --bg-glass: rgba(255, 255, 255, 0.85);
-  --bg-glass-heavy: rgba(255, 255, 255, 0.94);
-  --bg-overlay: rgba(15, 23, 42, 0.45);
+  /* ── 画布与表面 ──────────────────────────────────────────────────────── */
+  --color-paper:        oklch(98.5% 0.004 250);
+  --color-paper-2:      oklch(96.7% 0.006 250);
+  --color-paper-3:      oklch(94.8% 0.008 250);
+  --color-surface:      #ffffff;
+  --color-surface-sunk: oklch(97.4% 0.005 250);
+  --color-overlay:      oklch(22% 0.02 258 / 0.45);
 
-  /* 终端与深色对比面板 */
-  --bg-terminal: #0f172a;
-  --bg-terminal-subtle: #1e293b;
-  --text-terminal: #f8fafc;
-  --text-terminal-muted: #94a3b8;
-  --border-terminal: #334155;
+  /* ── 深色代码 / 请求面板 ─────────────────────────────────────────────── */
+  --color-graphite:      oklch(23% 0.02 258);
+  --color-graphite-2:    oklch(28% 0.02 258);
+  --color-graphite-rule: oklch(35% 0.018 258);
+  --color-graphite-ink:  oklch(97% 0.004 250);
 
-  /* 文字排版 */
-  --text-primary: #0f172a;
-  --text-secondary: #334155;
-  --text-muted: #64748b;
-  --text-subtle: #94a3b8;
-  --text-inverse: #ffffff;
+  /* ── 墨色 ────────────────────────────────────────────────────────────── */
+  --color-ink:     oklch(22% 0.02 258);
+  --color-ink-2:   oklch(34% 0.018 257);
+  --color-muted:   oklch(49% 0.016 255);
+  --color-faint:   oklch(63% 0.013 255);
+  --color-inverse: oklch(99% 0.003 250);
 
-  /* 边框与分割线 */
-  --border-color: #e2e8f0;
-  --border-light: #f1f5f9;
-  --border-strong: #cbd5e1;
-  --border-hover: #94a3b8;
+  /* ── 发丝线 ──────────────────────────────────────────────────────────── */
+  --color-rule:   oklch(89% 0.01 252);
+  --color-rule-2: oklch(82% 0.014 252);
+  --color-rule-3: oklch(74% 0.016 252);
 
-  /* 品牌与主强调色 (Aurora Blue) */
-  --primary: #2563eb;
-  --primary-hover: #1d4ed8;
-  --primary-active: #1e40af;
-  --primary-light: #eff6ff;
-  --primary-border: #bfdbfe;
-  --primary-text: #1d4ed8;
+  /* ── 钴蓝信号色：任何单屏占比都低于 5% ──────────────────────────────── */
+  --color-accent:        oklch(52% 0.205 256);
+  --color-accent-hover:  oklch(46% 0.195 256);
+  --color-accent-active: oklch(41% 0.185 256);
+  --color-accent-soft:   oklch(96.4% 0.019 256);
+  --color-accent-line:   oklch(87% 0.048 256);
+  --color-accent-ink:    oklch(42% 0.19 256);
+  --color-focus:         oklch(44% 0.18 256);
 
-  /* 状态色：成功 (Emerald) */
-  --success: #10b981;
-  --success-light: #ecfdf5;
-  --success-text: #065f46;
-  --success-border: #a7f3d0;
+  /* ── 状态色：只在陈述真实状态时出现 ─────────────────────────────────── */
+  --color-success:      oklch(45% 0.12 158);
+  --color-success-soft: oklch(96.5% 0.022 158);
+  --color-success-line: oklch(86% 0.06 158);
+  --color-success-ink:  oklch(38% 0.1 158);
 
-  /* 状态色：警示 / 琥珀金 (Amber) */
-  --warning: #f59e0b;
-  --warning-light: #fffbeb;
-  --warning-text: #92400e;
-  --warning-border: #fde68a;
+  --color-warning:      oklch(58% 0.13 75);
+  --color-warning-soft: oklch(97% 0.03 85);
+  --color-warning-line: oklch(87% 0.07 85);
+  --color-warning-ink:  oklch(45% 0.1 70);
 
-  /* 状态色：危险 (Ruby / Rose) */
-  --danger: #ef4444;
-  --danger-hover: #dc2626;
-  --danger-light: #fef2f2;
-  --danger-text: #991b1b;
-  --danger-border: #fecaca;
+  --color-danger:       oklch(50% 0.185 25);
+  --color-danger-hover: oklch(44% 0.175 25);
+  --color-danger-soft:  oklch(96.5% 0.02 25);
+  --color-danger-line:  oklch(87% 0.06 25);
+  --color-danger-ink:   oklch(42% 0.16 25);
 
-  /* 阴影体系 */
-  --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.03);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -4px rgba(0, 0, 0, 0.02);
-  --shadow-hover: 0 10px 25px -5px rgba(37, 99, 235, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.02);
-  --shadow-modal: 0 25px 50px -12px rgba(15, 23, 42, 0.25);
+  /* ── 阴影：克制到几乎看不见，层级主要交给发丝线 ─────────────────────── */
+  --shadow-xs:    0 1px 1px oklch(22% 0.02 258 / 0.04);
+  --shadow-sm:    0 1px 2px oklch(22% 0.02 258 / 0.05), 0 1px 1px oklch(22% 0.02 258 / 0.04);
+  --shadow-md:    0 2px 6px oklch(22% 0.02 258 / 0.06), 0 1px 2px oklch(22% 0.02 258 / 0.04);
+  --shadow-lg:    0 8px 24px oklch(22% 0.02 258 / 0.08), 0 2px 6px oklch(22% 0.02 258 / 0.04);
+  --shadow-hover: 0 6px 20px oklch(52% 0.205 256 / 0.1);
+  --shadow-modal: 0 24px 64px oklch(22% 0.02 258 / 0.24);
 
-  /* 圆角 */
-  --radius-xs: 4px;
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 20px;
+  /* ── 圆角：6 / 8 / 10 ────────────────────────────────────────────────── */
+  --radius-xs:   4px;
+  --radius-sm:   6px;
+  --radius-md:   8px;
+  --radius-lg:   10px;
+  --radius-xl:   14px;
   --radius-full: 9999px;
 
-  /* 字体体系 */
-  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, Monaco, monospace;
+  /* ── 间距：4 点命名刻度 ──────────────────────────────────────────────── */
+  --space-3xs: 2px;
+  --space-2xs: 4px;
+  --space-xs:  8px;
+  --space-sm:  12px;
+  --space-md:  16px;
+  --space-lg:  24px;
+  --space-xl:  32px;
+  --space-2xl: 48px;
+  --space-3xl: 64px;
+  --space-4xl: 96px;
 
-  /* 布局容器 */
-  --shell-max: 1200px;
-  --rail-width: 250px;
+  /* ── 字体：不请求外部字体（国内可达性优先），靠字重与字距建立工程感 ──── */
+  --font-display: "Space Grotesk", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* ── 运动 ────────────────────────────────────────────────────────────── */
+  --ease-out:          cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast:          160ms;
+  --dur-panel:         260ms;
+  --transition-fast:   var(--dur-fast) var(--ease-out);
+  --transition-normal: var(--dur-panel) var(--ease-out);
+
+  /* ── 布局 ────────────────────────────────────────────────────────────── */
+  --shell-max:            1200px;
+  --rail-width:           250px;
   --rail-width-collapsed: 72px;
-  --topbar-height: 60px;
-  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-normal: 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  --topbar-height:        60px;
+  --tap-target:           44px;
 
-  /* 脚本兼容别名 */
-  --c-primary: var(--primary);
+  /* ── 兼容层：历史令牌名 → 设计令牌，组件规则不动即可整体换肤 ────────── */
+  --bg-page:           var(--color-paper);
+  --bg-surface:        var(--color-surface);
+  --bg-surface-subtle: var(--color-paper-2);
+  --bg-glass:          oklch(99% 0.003 250 / 0.85);
+  --bg-overlay:        var(--color-overlay);
+
+  --bg-terminal:         var(--color-graphite);
+  --bg-terminal-subtle:  var(--color-graphite-2);
+  --text-terminal:       var(--color-graphite-ink);
+  --text-terminal-muted: oklch(72% 0.014 253);
+  --border-terminal:     var(--color-graphite-rule);
+
+  --text-primary:   var(--color-ink);
+  --text-secondary: var(--color-ink-2);
+  --text-muted:     var(--color-muted);
+  --text-subtle:    var(--color-faint);
+
+  --border-color:  var(--color-rule);
+  --border-light:  var(--color-paper-2);
+  --border-strong: var(--color-rule-2);
+
+  --primary:        var(--color-accent);
+  --primary-hover:  var(--color-accent-hover);
+  --primary-light:  var(--color-accent-soft);
+  --primary-border: var(--color-accent-line);
+  --primary-text:   var(--color-accent-ink);
+
+  --success:        var(--color-success);
+  --success-light:  var(--color-success-soft);
+  --success-text:   var(--color-success-ink);
+  --success-border: var(--color-success-line);
+
+  --warning:        var(--color-warning);
+  --warning-light:  var(--color-warning-soft);
+  --warning-text:   var(--color-warning-ink);
+  --warning-border: var(--color-warning-line);
+
+  --danger:        var(--color-danger);
+  --danger-light:  var(--color-danger-soft);
+  --danger-text:   var(--color-danger-ink);
+  --danger-border: var(--color-danger-line);
+}
+
+/* 脚本兼容别名：客户端脚本会在内联样式里直接引用这些名字 */
+:root {
+  --c-primary:       var(--primary);
   --c-primary-hover: var(--primary-hover);
-  --c-primary-glow: var(--primary-light);
-  --c-text: var(--text-secondary);
-  --c-text-dark: var(--text-primary);
-  --c-text-muted: var(--text-muted);
-  --c-bg: var(--bg-page);
-  --c-bg-white: var(--bg-surface);
-  --c-border: var(--border-color);
-  --c-success: var(--success);
-  --c-success-bg: var(--success-light);
-  --c-success-text: var(--success-text);
-  --c-danger: var(--danger);
-  --c-danger-bg: var(--danger-light);
-  --c-danger-text: var(--danger-text);
-  --c-overlay: var(--bg-overlay);
+  --c-primary-glow:  var(--primary-light);
+  --c-text:          var(--text-secondary);
+  --c-text-dark:     var(--text-primary);
+  --c-text-muted:    var(--text-muted);
+  --c-bg:            var(--bg-page);
+  --c-bg-white:      var(--bg-surface);
+  --c-border:        var(--border-color);
+  --c-success:       var(--success);
+  --c-success-bg:    var(--success-light);
+  --c-success-text:  var(--success-text);
+  --c-danger:        var(--danger);
+  --c-danger-bg:     var(--danger-light);
+  --c-danger-text:   var(--danger-text);
+  --c-overlay:       var(--bg-overlay);
 }
 
 /* ==========================================================================
-   CSS Reset & Base
+   基础层：重置、排版基线、可达性
    ========================================================================== */
 
 *, *::before, *::after {
@@ -120,21 +182,34 @@ export const CSS_CONTENT = `
 html {
   font-family: var(--font-sans);
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--text-primary);
   background-color: var(--bg-page);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   scroll-behavior: smooth;
+  overflow-x: clip;
 }
 
 body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  overflow-x: hidden;
+  overflow-x: clip;
   background-color: var(--bg-page);
+}
+
+/* 只在键盘导航时出现焦点环，鼠标点击不打扰 */
+:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+::selection {
+  background-color: var(--color-accent-soft);
+  color: var(--color-accent-ink);
 }
 
 button, input, select, textarea {
@@ -149,6 +224,17 @@ a {
 
 code, pre {
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  html { scroll-behavior: auto; }
 }
 
 .hd {
@@ -181,6 +267,20 @@ code, pre {
   vertical-align: middle;
   flex-shrink: 0;
   line-height: 1;
+  /* 尺寸走 CSS 变量：标记里只写一个 --i，省掉每个图标约 190 字节的重复内联样式 */
+  width: var(--i, 16px);
+  height: var(--i, 16px);
+  min-width: var(--i, 16px);
+  min-height: var(--i, 16px);
+}
+
+/* 图标雪碧图容器：不参与布局、不可见，只提供 <symbol> 定义 */
+.icon-sprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 
 .svg-icon svg {
@@ -195,29 +295,37 @@ code, pre {
   width: 100%;
   max-width: var(--shell-max);
   margin-inline: auto;
-  padding-inline: 24px;
+  padding-inline: var(--space-lg);
 }
 
 @media (max-width: 640px) {
   .shell {
-    padding-inline: 16px;
+    padding-inline: var(--space-md);
   }
 }
 
 /* ==========================================================================
-   Typography & Helpers
+   排版
    ========================================================================== */
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.25;
+}
 
 .eyebrow {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  gap: var(--space-xs);
+  font-family: var(--font-display);
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--primary);
-  margin-bottom: 8px;
+  color: var(--color-accent-ink);
+  margin-bottom: var(--space-xs);
 }
 
 .eyebrow::before {
@@ -226,7 +334,7 @@ code, pre {
   width: 6px;
   height: 6px;
   border-radius: var(--radius-full);
-  background-color: var(--primary);
+  background-color: var(--color-accent);
 }
 
 .c-p { color: var(--primary) !important; }
@@ -242,39 +350,63 @@ code, pre {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 8px 16px;
+  gap: var(--space-xs);
+  min-height: 34px;
+  padding: 7px 14px;
   font-size: 13px;
   font-weight: 500;
-  border-radius: var(--radius-md);
+  line-height: 1.2;
+  border-radius: var(--radius-sm);
   border: 1px solid transparent;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
   white-space: nowrap;
   user-select: none;
   background-color: transparent;
 }
 
-.btn:active {
+.btn:not(:disabled):active {
   transform: translateY(1px);
 }
 
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.btn[aria-busy="true"] {
+  cursor: progress;
+  opacity: 0.75;
+}
+
+/* 触屏设备保证 44px 命中区（design.md 的可达性约定） */
+@media (pointer: coarse) {
+  .btn { min-height: var(--tap-target); }
+  .icon-btn { width: var(--tap-target); height: var(--tap-target); }
+}
+
 .btn-p {
-  background-color: var(--primary);
+  background-color: var(--color-accent);
+  border-color: var(--color-accent);
   color: #ffffff;
-  box-shadow: 0 1px 2px 0 rgba(37, 99, 235, 0.2);
 }
 
 .btn-p:hover {
-  background-color: var(--primary-hover);
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+  background-color: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+.btn-p:active {
+  background-color: var(--color-accent-active);
+  border-color: var(--color-accent-active);
 }
 
 .btn-s {
   background-color: var(--bg-surface);
   color: var(--text-secondary);
   border-color: var(--border-color);
-  box-shadow: var(--shadow-xs);
 }
 
 .btn-s:hover {
@@ -308,14 +440,15 @@ code, pre {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-color);
   background-color: var(--bg-surface);
   color: var(--text-muted);
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
 .icon-btn:hover {
@@ -349,9 +482,19 @@ code, pre {
 .sl {
   position: absolute;
   inset: 0;
-  background-color: var(--border-strong);
+  background-color: var(--color-rule-2);
   border-radius: var(--radius-full);
-  transition: all var(--transition-fast);
+  transition: background-color var(--transition-fast);
+}
+
+.tg input:focus-visible + .sl {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.tg input:disabled + .sl {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .sl::before {
@@ -363,12 +506,12 @@ code, pre {
   bottom: 3px;
   background-color: #ffffff;
   border-radius: var(--radius-full);
-  transition: all var(--transition-fast);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  transition: transform var(--transition-fast);
+  box-shadow: 0 1px 2px oklch(22% 0.02 258 / 0.2);
 }
 
 .tg input:checked + .sl {
-  background-color: var(--primary);
+  background-color: var(--color-accent);
 }
 
 .tg input:checked + .sl::before {
@@ -385,6 +528,8 @@ code, pre {
   font-weight: 500;
   border-radius: var(--radius-full);
   line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .bd-on {
@@ -442,8 +587,8 @@ code, pre {
 .fg {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-bottom: 14px;
+  gap: var(--space-2xs);
+  margin-bottom: var(--space-md);
 }
 
 .fg label {
@@ -482,24 +627,39 @@ input[type="text"],
 input[type="password"],
 input[type="url"],
 input[type="search"],
+input[type="number"],
 select,
 textarea {
   width: 100%;
-  padding: 8px 12px;
+  min-height: 34px;
+  padding: 7px 12px;
   font-size: 13px;
   background-color: var(--bg-surface);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   color: var(--text-primary);
-  transition: all var(--transition-fast);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background-color var(--transition-fast);
   outline: none;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-faint);
+}
+
+input:disabled,
+select:disabled,
+textarea:disabled {
+  background-color: var(--bg-surface-subtle);
+  color: var(--text-muted);
+  cursor: not-allowed;
 }
 
 input:focus,
 select:focus,
 textarea:focus {
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-light);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
 }
 
 .select-sm {
@@ -739,9 +899,9 @@ textarea {
   width: 32px;
   height: 32px;
   border-radius: var(--radius-md);
-  background: linear-gradient(135deg, #2563eb, #3b82f6);
+  background-color: var(--color-accent);
   color: #ffffff;
-  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.25);
+  box-shadow: var(--shadow-sm);
   flex-shrink: 0;
 }
 
@@ -764,7 +924,7 @@ textarea {
    ========================================================================== */
 
 .home-page {
-  background: radial-gradient(circle at 50% 0%, rgba(37, 99, 235, 0.04) 0%, transparent 60%), var(--bg-page);
+  background-color: var(--bg-page);
 }
 
 .home-hero {
@@ -773,6 +933,13 @@ textarea {
   grid-template-columns: 1.1fr 0.9fr;
   gap: 36px;
   align-items: center;
+}
+
+/* 网格子项默认 min-width:auto，会被内部 white-space:nowrap 的长 URL 顶宽，
+   导致移动端整块（含右侧复制按钮）溢出视口。这里显式允许收缩，
+   让 .endpoint-box--url code 的 ellipsis 真正生效。 */
+.home-hero > * {
+  min-width: 0;
 }
 
 @media (max-width: 900px) {
@@ -915,6 +1082,10 @@ textarea {
   margin-top: 14px;
 }
 
+.endpoint-list > * {
+  min-width: 0;
+}
+
 @media (max-width: 1080px) {
   .endpoint-list {
     grid-template-columns: repeat(2, 1fr);
@@ -1035,9 +1206,10 @@ textarea {
   }
 }
 
-.syntax-command { color: #38bdf8; font-weight: 600; }
-.syntax-key { color: #a78bfa; }
-.syntax-string { color: #34d399; }
+/* 代码即内容：语法色是功能性配色，保留语义但统一冷暖 */
+.syntax-command { color: oklch(78% 0.12 235); font-weight: 600; }
+.syntax-key { color: oklch(80% 0.10 300); }
+.syntax-string { color: oklch(80% 0.10 158); }
 
 .request-panel__foot {
   padding: 10px 18px;
@@ -1051,7 +1223,7 @@ textarea {
 }
 
 .request-panel__foot code {
-  color: #38bdf8;
+  color: oklch(78% 0.12 235);
 }
 
 /* Metrics Strip */
@@ -1060,6 +1232,11 @@ textarea {
   grid-template-columns: repeat(4, 1fr);
   gap: 16px;
   margin-bottom: 40px;
+}
+
+.metrics-strip > *,
+.admin-metrics > * {
+  min-width: 0;
 }
 
 @media (max-width: 768px) {
@@ -1315,7 +1492,7 @@ textarea {
    ========================================================================== */
 
 .auth-page {
-  background: radial-gradient(circle at 50% 30%, rgba(37, 99, 235, 0.05) 0%, transparent 60%), var(--bg-page);
+  background-color: var(--bg-page);
   align-items: center;
   justify-content: center;
 }
@@ -1588,7 +1765,7 @@ textarea {
     background-color: var(--primary);
     color: #ffffff;
     border-color: var(--primary);
-    box-shadow: 0 1px 3px rgba(37, 99, 235, 0.25);
+    box-shadow: var(--shadow-xs);
   }
   .admin-topbar__nav a.is-active b {
     background-color: rgba(255, 255, 255, 0.25);
@@ -1906,7 +2083,7 @@ textarea {
   display: none;
   padding: 24px;
   border-top: 1px solid var(--border-light);
-  background-color: #fafbfc;
+  background-color: var(--color-paper-2);
 }
 
 .pd.open {
@@ -1983,7 +2160,7 @@ fieldset.form-group legend {
 
 .rank-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr));
   gap: 18px;
   margin-top: 16px;
 }
@@ -2127,7 +2304,7 @@ fieldset.form-group legend {
 .rank-bar__fill {
   height: 100%;
   border-radius: var(--radius-full);
-  background: linear-gradient(90deg, #2563eb, #3b82f6);
+  background-color: var(--color-accent);
   transition: width var(--transition-normal);
 }
 

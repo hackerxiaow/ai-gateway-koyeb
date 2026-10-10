@@ -1,4 +1,5 @@
 import { Context } from 'hono'
+import { renderProviderPanel } from './admin.page'
 import {
   getProviders,
   getProvider,
@@ -168,6 +169,20 @@ function redactProvider(p: Provider): Provider & { dsAccount?: Record<string, un
 }
 
 const KEY_PREVIEW = 10
+
+/**
+ * 单个渠道的编辑面板 HTML（懒加载）。
+ *
+ * 面板占地很大（全部渠道合计数百 KiB），但默认折叠、多数时候不会被打开，
+ * 因此列表页只渲染摘要，展开时才取这一段。返回 HTML 而非 JSON，前端直接注入。
+ */
+export async function handleProviderPanel(c: Context<{ Bindings: Env }>) {
+  const id = c.req.param('id')
+  if (!id) return c.json({ success: false, message: '缺少 id 参数' }, 400)
+  const provider = await getProvider(c.env, id)
+  if (!provider) return c.json({ success: false, message: '渠道不存在' }, 404)
+  return c.html(renderProviderPanel(provider))
+}
 
 export async function handleGetProviders(c: Context<{ Bindings: Env }>) {
   const providers = await getProviders(c.env)

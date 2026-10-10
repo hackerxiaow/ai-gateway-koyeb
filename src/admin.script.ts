@@ -5,14 +5,14 @@ function copyText(t, el) {
   var iconEl = el.querySelector('.svg-icon') || el.querySelector('i') || (el.classList.contains('svg-icon') ? el : null)
   navigator.clipboard.writeText(t).then(function() {
     el.setAttribute('data-state', 'success')
-    if (iconEl && window.SVG_ICONS && window.SVG_ICONS.check) {
-      iconEl.innerHTML = window.SVG_ICONS.check
+    if (iconEl) {
+      iconEl.innerHTML = svgInner('check')
       iconEl.className = 'svg-icon c-s'
     }
     setTimeout(function() {
       el.removeAttribute('data-state')
-      if (iconEl && window.SVG_ICONS && window.SVG_ICONS.copy) {
-        iconEl.innerHTML = window.SVG_ICONS.copy
+      if (iconEl) {
+        iconEl.innerHTML = svgInner('copy')
         iconEl.className = 'svg-icon'
       }
     }, 1800)
@@ -69,12 +69,56 @@ function toast(msg, t) {
   setTimeout(function() { el.classList.add('hd') }, 3000)
 }
 
+// ── 统一 API 调用 ──
+// 把「网络异常 / 非 JSON 响应 / 会话失效」收敛为 { success:false, message, status }，
+// 调用方只判断 d.success，避免未捕获的 Promise 异常让界面静默无反应。
+async function apiCall(url, options) {
+  var res
+  try {
+    res = await fetch(url, options)
+  } catch (e) {
+    return { success: false, status: 0, message: '网络请求失败：' + ((e && e.message) || e) }
+  }
+  var text = ''
+  try {
+    text = await res.text()
+  } catch (e) {
+    text = ''
+  }
+  var data = null
+  if (text) {
+    try { data = JSON.parse(text) } catch (e) { data = null }
+  }
+  if (!data) {
+    var ct = (res.headers && res.headers.get) ? (res.headers.get('content-type') || '') : ''
+    if (ct.indexOf('text/html') >= 0) {
+      return { success: false, status: res.status, message: '登录状态可能已失效，请刷新页面重新登录' }
+    }
+    return { success: false, status: res.status, message: '服务器返回了非 JSON 响应（HTTP ' + res.status + '）' }
+  }
+  if (typeof data.status !== 'number') data.status = res.status
+  return data
+}
+
 // ── 渠道卡片折叠与展开 ──
 function tog(id) {
-  const d = document.getElementById('dt-' + id), c = document.getElementById('ch-' + id)
+  var d = document.getElementById('dt-' + id), c = document.getElementById('ch-' + id)
   if (!d) return
+  var opening = !d.classList.contains('open')
   d.classList.toggle('open')
-  if (c) c.style.transform = d.classList.contains('open') ? 'rotate(90deg)' : ''
+  if (c) c.style.transform = opening ? 'rotate(90deg)' : ''
+  // ── 面板懒加载：列表页只渲染摘要，编辑面板首次展开时才取 ──
+  if (opening && d.getAttribute('data-lazy') === '1') {
+    d.removeAttribute('data-lazy')
+    d.innerHTML = '<div class="form-helper" style="padding:16px 0">' + svgIcon('spinner', 'spin', 14) + ' 正在加载编辑面板…</div>'
+    fetch('/admin/api/providers/' + encodeURIComponent(id) + '/panel', { credentials: 'same-origin' })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text() })
+      .then(function (html) { d.innerHTML = html })
+      .catch(function (err) {
+        d.setAttribute('data-lazy', '1')
+        d.innerHTML = '<div class="al al-e" style="margin:12px 0">编辑面板加载失败：' + escapeHtml(err.message || '网络错误') + '，请收起后重试。</div>'
+      })
+  }
 }
 
 function showAdd() { 
@@ -220,9 +264,8 @@ async function verifyDevin(id) {
   if (!keys || !keys.length) { toast('请先填写 session token 或完成授权', 'error'); return }
   toast('校验中…', 'success')
   try {
-    const r = await fetch('/admin/api/devin/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const d = await apiCall('/admin/api/devin/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ credential: keys[0] }) })
-    const d = await r.json()
     toast(d.success ? ((d.data && d.data.message) || '凭据有效') : (d.message || '校验失败'), d.success ? 'success' : 'error')
   } catch (e) { toast('校验请求失败', 'error') }
 }
@@ -230,8 +273,7 @@ async function verifyDevin(id) {
 async function devinOAuth(id) {
   const w = window.open('', '_blank')
   try {
-    const r = await fetch('/admin/api/devin/oauth/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-    const d = await r.json()
+    const d = await apiCall('/admin/api/devin/oauth/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
     if (!d.success || !d.data) { if (w) w.close(); toast(d.message || '生成授权链接失败', 'error'); return }
     if (w) w.location.href = d.data.url; else window.open(d.data.url, '_blank')
     showM('<h3>' + svgIcon('key', 'c-p', 20) + ' Devin 授权</h3><p class="form-helper" style="margin-bottom:8px">在打开的 Devin 页面登录并确认授权，页面会直接显示一段授权码（code），复制到下面。</p><div class="fg"><label>授权码 code</label><textarea id="dvcode" rows="3" class="fx1" placeholder="粘贴页面给出的 code"></textarea></div><div class="fa"><button class="btn btn-s" onclick="closeM()">取消</button><button class="btn btn-p" id="dvok">完成授权</button></div>')
@@ -241,8 +283,7 @@ async function devinOAuth(id) {
       if (!code) { toast('请粘贴授权码', 'error'); return }
       ok.disabled = true
       try {
-        const rr = await fetch('/admin/api/devin/oauth/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code, state: d.data.state }) })
-        const dd = await rr.json()
+        const dd = await apiCall('/admin/api/devin/oauth/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code, state: d.data.state }) })
         if (dd.success && dd.data && dd.data.session_token) {
           const el = document.getElementById(id === 'new' ? 'dvt' : 'dvt-' + id)
           if (el) { el.value = (el.value ? el.value.replace(new RegExp('\\\\s*$'), '\\\\n') : '') + dd.data.session_token }
@@ -265,9 +306,8 @@ async function verifyVertex(id) {
   }
   toast('校验中…', 'success')
   try {
-    const r = await fetch('/admin/api/vertex/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const d = await apiCall('/admin/api/vertex/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ credential: keys[0], model: model || undefined, location: provVertexLocation(id) || undefined }) })
-    const d = await r.json()
     toast(d.success ? ((d.data && d.data.message) || '凭据有效') : (d.message || '校验失败'), d.success ? 'success' : 'error')
   } catch (e) { toast('校验请求失败', 'error') }
 }
@@ -284,8 +324,7 @@ async function antigravityOAuth(id) {
   const w = window.open('', '_blank')
   if (tr) showSpinner(tr)
   try {
-    const r = await fetch('/admin/api/antigravity/oauth/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-    const d = await r.json()
+    const d = await apiCall('/admin/api/antigravity/oauth/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
     if (!d.success || !d.data) { if (w) w.close(); if (tr) showResult(tr, false, d.message || '生成授权链接失败'); return }
     if (w) w.location.href = d.data.url; else window.open(d.data.url, '_blank')
     showM('<h3>' + svgIcon('key', 'c-p', 20) + ' Antigravity 授权</h3><p class="form-helper" style="margin-bottom:8px">在打开的 Google 页面登录并同意授权。授权后浏览器会跳转到 <code>localhost:51121</code> 并提示「无法访问」—— 这是正常的，把地址栏 <code>code=</code> 后面那段复制到下面。</p><div class="fg"><label>code 或回调地址</label><textarea id="agcode" rows="3" class="fx1" placeholder="4/0A... 或 http://localhost:51121/oauth-callback?code=..."></textarea></div><div class="fa"><button class="btn btn-s" onclick="closeM()">取消</button><button class="btn btn-p" id="agok">完成授权</button></div>')
@@ -295,8 +334,7 @@ async function antigravityOAuth(id) {
       if (!code) { toast('请粘贴 code', 'error'); return }
       agok.disabled = true
       try {
-        const rr = await fetch('/admin/api/antigravity/oauth/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code, state: d.data.state }) })
-        const dd = await rr.json()
+        const dd = await apiCall('/admin/api/antigravity/oauth/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code, state: d.data.state }) })
         if (dd.success && dd.data && dd.data.refresh_token) {
           closeM()
           addKeyValue(id, dd.data.refresh_token)
@@ -327,8 +365,7 @@ async function fetchAgModels(id) {
   if (!key) { toast('请先填写或授权获取 refresh_token', 'error'); return }
   if (tr) showSpinner(tr)
   try {
-    const r = await fetch('/admin/api/antigravity/models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ apiKey: key }) })
-    const d = await r.json()
+    const d = await apiCall('/admin/api/antigravity/models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ apiKey: key }) })
     if (!d.success) { if (tr) showResult(tr, false, d.message || '获取失败'); return }
     const models = (d.data && d.data.models) || []
     if (models.length === 0) { if (tr) showResult(tr, false, '未解析到模型名，可手动填写'); return }
@@ -350,8 +387,7 @@ async function oauthChannel(id) {
   try {
     const baseEl = document.getElementById(id === 'new' ? 'aurl' : 'url-' + id)
     const baseUrl = baseEl ? baseEl.value.trim() : ''
-    const r = await fetch('/admin/api/oauth/' + provider + '/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ baseUrl: baseUrl, region: cbRegionValue(id) }) })
-    const d = await r.json()
+    const d = await apiCall('/admin/api/oauth/' + provider + '/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ baseUrl: baseUrl, region: cbRegionValue(id) }) })
     if (!d.success || !d.data) { if (tr) showResult(tr, false, d.message || '发起授权失败'); return }
     if (d.data.mode === 'redirect') {
       const w = window.open('', '_blank')
@@ -365,8 +401,7 @@ async function oauthChannel(id) {
         if (!code) { toast('请粘贴 code', 'error'); return }
         oaok.disabled = true
         try {
-          const rr = await fetch('/admin/api/oauth/' + provider + '/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code, state: d.data.state }) })
-          const dd = await rr.json()
+          const dd = await apiCall('/admin/api/oauth/' + provider + '/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code, state: d.data.state }) })
           if (dd.success && dd.data && dd.data.refresh_token) {
             closeM()
             addKeyValue(id, dd.data.refresh_token)
@@ -412,8 +447,7 @@ async function pollDeviceFlow(provider, state, id, tr, boxEl) {
     await new Promise(function (res) { setTimeout(res, intervalMs) })
     if (!box || !document.body.contains(box)) return
     try {
-      const r = await fetch('/admin/api/oauth/' + provider + '/poll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: state }) })
-      const d = await r.json()
+      const d = await apiCall('/admin/api/oauth/' + provider + '/poll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: state }) })
       if (!d.success || !d.data) {
         box.innerHTML = '<span class="c-e">' + escapeHtml(d.message || '轮询失败') + '</span>'
         return
@@ -452,11 +486,10 @@ async function codebuddyStatus(id) {
   try {
     const baseEl = document.getElementById(id === 'new' ? 'aurl' : 'url-' + id)
     const baseUrl = baseEl ? baseEl.value.trim() : ''
-    const r = await fetch('/admin/api/codebuddy/status', {
+    const d = await apiCall('/admin/api/codebuddy/status', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken: key, baseUrl: baseUrl, region: cbRegionValue(id) }),
     })
-    const d = await r.json()
     if (tr) showResult(tr, !!(d.success && d.data && d.data.ok), (d.success && d.data && d.data.ok) ? '' : (d.message || (d.data && d.data.message) || '查询失败'))
     if (!d.success || !d.data || !d.data.ok) {
       if (box) box.innerHTML = '<span class="c-e">' + escapeHtml(d.message || (d.data && d.data.message) || '查询失败') + '</span>'
@@ -492,11 +525,10 @@ async function codebuddyCheckin(id) {
   try {
     const baseEl = document.getElementById(id === 'new' ? 'aurl' : 'url-' + id)
     const baseUrl = baseEl ? baseEl.value.trim() : ''
-    const r = await fetch('/admin/api/codebuddy/checkin', {
+    const d = await apiCall('/admin/api/codebuddy/checkin', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken: key, baseUrl: baseUrl, region: cbRegionValue(id) }),
     })
-    const d = await r.json()
     const ok = !!(d.success && d.data && d.data.ok)
     if (tr) showResult(tr, ok, ok ? '' : (d.message || (d.data && d.data.message) || '签到失败'))
     if (!ok) {
@@ -572,11 +604,10 @@ async function submitDeepseekAccount(id) {
   if (!u || !p) { toast('请填写账号和密码', 'error'); return }
   toast('登录中…', 'success')
   try {
-    const r = await fetch('/admin/api/deepseek/account', {
+    const d = await apiCall('/admin/api/deepseek/account', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ providerId: id === 'new' ? (document.getElementById('aid').value.trim() || 'deepseek') : id, username: u, password: p }),
     })
-    const d = await r.json()
     if (!d.success) { toast(d.message || '登录失败', 'error'); return }
     if (d.data && d.data.userToken) {
       fillDeepseekKeyInput(id, d.data.userToken)
@@ -589,11 +620,10 @@ async function submitDeepseekAccount(id) {
 async function clearDeepseekAccount(id) {
   if (!(await cM('确定清除此托管账号？'))) return
   try {
-    const r = await fetch('/admin/api/deepseek/account', {
+    const d = await apiCall('/admin/api/deepseek/account', {
       method: 'DELETE', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ providerId: id === 'new' ? (document.getElementById('aid').value.trim() || 'deepseek') : id }),
     })
-    const d = await r.json()
     toast(d.success ? '已清除' : (d.message || '清除失败'), d.success ? 'success' : 'error')
     closeM()
   } catch (e) { toast('清除请求失败', 'error') }
@@ -615,11 +645,10 @@ async function verifyDeepseek(id) {
   if (!key) { toast('请先填写 API Key 或 userToken', 'error'); return }
   toast('校验凭据中…', 'success')
   try {
-    const r = await fetch('/admin/api/test-key', {
+    const d = await apiCall('/admin/api/test-key', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: 'https://chat.deepseek.com', apiKey: key, apiType: 'openai', providerType: 'deepseek' })
     })
-    const d = await r.json()
     if (d.success && d.data && d.data.success) {
       toast('凭据有效', 'success')
     } else {
@@ -644,11 +673,10 @@ async function fetchOAuthModels(id) {
   try {
     const baseEl = document.getElementById(id === 'new' ? 'aurl' : 'url-' + id)
     const baseUrl = baseEl ? baseEl.value.trim() : ''
-    const r = await fetch('/admin/api/oauth/' + provider + '/models', {
+    const d = await apiCall('/admin/api/oauth/' + provider + '/models', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken: key, apiKey: key, providerId: id !== 'new' ? id : undefined, baseUrl: baseUrl, region: cbRegionValue(id) })
     })
-    const d = await r.json()
     if (!d.success) { if (tr) showResult(tr, false, d.message || '获取失败'); return }
     const models = (d.data && d.data.models) || []
     if (!models.length) { if (tr) showResult(tr, false, '未解析到模型'); return }
@@ -669,8 +697,7 @@ async function refreshAgAccounts() {
   if (!box) return
   box.innerHTML = '<div class="form-helper" style="padding:12px 0;grid-column:1/-1">' + svgIcon('spinner', 'spin', 14) + ' 正在刷新账号…</div>'
   try {
-    const r = await fetch('/admin/api/antigravity/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-    const d = await r.json()
+    const d = await apiCall('/admin/api/antigravity/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
     if (!d.success || !d.data || !Array.isArray(d.data.channels)) {
       box.innerHTML = '<div class="al al-e" style="grid-column:1/-1">' + escapeHtml(d.message || '获取账号失败') + '</div>'
       return
@@ -760,8 +787,7 @@ async function queryAllAgQuota() {
   quotaReady = true
   box.innerHTML = '<div class="form-helper" style="padding:12px 0;grid-column:1/-1">' + svgIcon('spinner', 'spin', 14) + ' 正在查询全部账号，这通常需要数秒…</div>'
   try {
-    const r = await fetch('/admin/api/antigravity/quota', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-    const d = await r.json()
+    const d = await apiCall('/admin/api/antigravity/quota', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
     if (!d.success || !d.data || !Array.isArray(d.data.channels)) {
       box.innerHTML = '<div class="al al-e" style="grid-column:1/-1">' + escapeHtml(d.message || '查询失败') + '</div>'
       return
@@ -781,8 +807,7 @@ async function agAccountQuery(chId, idx) {
   quotaReady = true
   el.innerHTML = '<div class="form-helper" style="padding:8px 0">' + svgIcon('spinner', 'spin', 14) + ' 查询中…</div>'
   try {
-    const r = await fetch('/admin/api/antigravity/quota', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ channelId: chId, index: idx }) })
-    const d = await r.json()
+    const d = await apiCall('/admin/api/antigravity/quota', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ channelId: chId, index: idx }) })
     if (!d.success || !d.data || !d.data.accounts || !d.data.accounts.length) {
       el.innerHTML = '<div class="al al-e">' + escapeHtml(d.message || '查询失败') + '</div>'
       return
@@ -851,8 +876,7 @@ async function queryAllClineQuota() {
   if (!box) return
   box.innerHTML = '<div class="form-helper" style="padding:12px 0;grid-column:1/-1">' + svgIcon('spinner', 'spin', 14) + ' 正在查询全部 Cline 账号…</div>'
   try {
-    const r = await fetch('/admin/api/cline/quota', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-    const d = await r.json()
+    const d = await apiCall('/admin/api/cline/quota', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
     if (!d.success || !d.data || !Array.isArray(d.data.channels)) {
       box.innerHTML = '<div class="al al-e" style="grid-column:1/-1">' + escapeHtml(d.message || '查询失败') + '</div>'
       return
@@ -1119,12 +1143,11 @@ async function createProv() {
     pitch: document.getElementById('ap').value.trim() || '+0Hz',
   } : {}
 
-  const r = await fetch('/admin/api/providers', {
+  const d = await apiCall('/admin/api/providers', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id, name: nm, baseUrl: url, apiType, type, region: isCodebuddyType(type) ? cbRegionValue('new') : undefined, apiKeys: keys, models, mirrorUrls, enabled, project: provProject('new') || undefined, location: provVertexLocation('new') || undefined, ...ttsConf })
   })
-  const d = await r.json()
   if (d.success) { toast('渠道创建成功', 'success'); location.reload() }
   else toast(d.message || '创建失败', 'error')
 }
@@ -1153,10 +1176,9 @@ function keyRowHtml(id, idx, key, enabled) {
 }
 
 async function keysDelta(id, payload) {
-  const r = await fetch('/admin/api/providers/' + encodeURIComponent(id) + '/keys', {
+  const d = await apiCall('/admin/api/providers/' + encodeURIComponent(id) + '/keys', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
   })
-  const d = await r.json()
   if (!d.success) { toast(d.message || '操作失败', 'error'); return null }
   return d.data
 }
@@ -1229,8 +1251,7 @@ async function loadMoreKeys(idOrEl) {
   if (btn) { btn.disabled = true; btn.textContent = '加载中…' }
   try {
     const offset = container.querySelectorAll('[data-kidx]').length
-    const r = await fetch('/admin/api/providers/' + encodeURIComponent(id) + '/keys?offset=' + offset + '&size=100')
-    const d = await r.json()
+    const d = await apiCall('/admin/api/providers/' + encodeURIComponent(id) + '/keys?offset=' + offset + '&size=100')
     if (!d.success) { toast(d.message || '加载失败', 'error'); return }
     const start = offset
     d.data.keys.forEach(function (k, i) { container.appendChild(keyRowHtml(id, start + i, k.key, k.enabled)) })
@@ -1323,20 +1344,18 @@ async function save(id) {
   if (newId !== id && !/^[a-zA-Z0-9_-]+$/.test(newId)) { toast('ID 只能包含字母/数字/下划线/连字符', 'error'); return }
   // Key 大池渠道: apiKeys 走 /keys 增量接口维护, 渠道保存不再整包提交(避免覆盖未加载的 Key)
   const keysViaDelta = type !== 'vertex' && type !== 'devin'
-  const r = await fetch('/admin/api/providers/' + encodeURIComponent(id), {
+  const d = await apiCall('/admin/api/providers/' + encodeURIComponent(id), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: nm, baseUrl: url, apiType, type, region: isCodebuddyType(type) ? cbRegionValue(id) : undefined, apiKeys: keysViaDelta ? undefined : keys, models, mirrorUrls, enabled, newId, project: provProject(id) || undefined, location: provVertexLocation(id) || undefined, ...ttsConf })
   })
-  const d = await r.json()
   if (d.success) { toast('已保存', 'success'); location.reload() }
   else toast(d.message || '保存失败', 'error')
 }
 
 async function del(id) {
   if (!(await cM('确定要删除此渠道？此操作不可逆。'))) return
-  const r = await fetch('/admin/api/providers/' + encodeURIComponent(id), { method: 'DELETE' })
-  const d = await r.json()
+  const d = await apiCall('/admin/api/providers/' + encodeURIComponent(id), { method: 'DELETE' })
   if (d.success) { toast('已删除', 'success'); location.reload() }
   else toast(d.message || '删除失败', 'error')
 }
@@ -1371,12 +1390,11 @@ async function testMdl(id, mid, idx) {
   const tr = document.getElementById('tr-' + id)
   showSpinner(tr)
   try {
-    const r = await fetch('/admin/api/test-model', {
+    const d = await apiCall('/admin/api/test-model', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: url, apiKey: apiKey, apiType: apiType, model: mid, providerId: id, mirrorUrls: mirrorUrls || undefined, providerType: provType(id), project: provProject(id) || undefined })
     })
-    const d = await r.json()
     showResult(tr, d.success, d.message || '')
   } catch (e) { showResult(tr, false, '请求失败') }
 }
@@ -1392,12 +1410,11 @@ async function genKey() {
 
 async function doGenKey(exp, name) {
   closeM()
-  const r = await fetch('/admin/api/proxy-keys', {
+  const d = await apiCall('/admin/api/proxy-keys', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: name || '', expiresIn: exp })
   })
-  const d = await r.json()
   if (d.success && d.data) {
     showM('<h3>' + svgIcon('check', 'c-s', 20) + ' 令牌生成成功</h3><p>请妥善保存该 Key，出于安全原因它只展示一次：</p><div class="endpoint-box endpoint-box--key" style="margin-top:10px"><code>' + d.data.key + '</code><button class="btn btn-s" onclick="copyText(\\'' + d.data.key + '\\',this)">' + svgIcon('copy', '', 14) + ' 复制</button></div><div class="fa"><button class="btn btn-p" onclick="closeM();location.reload()">完成</button></div>')
   } else toast(d.message || '生成失败', 'error')
@@ -1405,20 +1422,18 @@ async function doGenKey(exp, name) {
 
 async function rmKey(id) {
   if (!(await cM('确定要删除此 Key？删除后客户端将立即无法接入。'))) return
-  const r = await fetch('/admin/api/proxy-keys/' + encodeURIComponent(id), { method: 'DELETE' })
-  const d = await r.json()
+  const d = await apiCall('/admin/api/proxy-keys/' + encodeURIComponent(id), { method: 'DELETE' })
   if (d.success) { toast('已删除', 'success'); location.reload() }
   else toast(d.message || '删除失败', 'error')
 }
 
 async function regenerateKey(id) {
   if (!(await cM('重新生成后旧 Key 将立即失效，确定继续？'))) return
-  const r = await fetch('/admin/api/proxy-keys/' + encodeURIComponent(id), {
+  const d = await apiCall('/admin/api/proxy-keys/' + encodeURIComponent(id), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ regenerate: true })
   })
-  const d = await r.json()
   if (!d.success) { toast(d.message || '重新生成失败', 'error'); return }
   const nk = d.data.key
   showM('<h3>' + svgIcon('refresh', 'c-p', 20) + ' 令牌已重新生成</h3><div class="endpoint-box endpoint-box--key" style="margin-top:10px"><code>' + nk + '</code><button class="btn btn-s" id="rgCopyBtn">' + svgIcon('copy', '', 14) + ' 复制</button></div><div class="fa"><button class="btn btn-p" onclick="closeM()">关闭</button></div>')
@@ -1432,12 +1447,11 @@ async function togglePb(id, checked) {
   if (!pi) return
   const b = pi.querySelector('.ps .bd')
   if (b) { b.textContent = checked ? '已启用' : '未启用'; b.className = 'bd ' + (checked ? 'bd-on' : 'bd-off') }
-  const r = await fetch('/admin/api/providers/' + encodeURIComponent(id), {
+  const d = await apiCall('/admin/api/providers/' + encodeURIComponent(id), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled: checked })
   })
-  const d = await r.json()
   if (!d.success) toast(d.message || '操作失败', 'error')
 }
 
@@ -1455,12 +1469,11 @@ function toggleKeyVis(id) {
 }
 
 async function toggleProxyKey(id, checked) {
-  const r = await fetch('/admin/api/proxy-keys/' + encodeURIComponent(id), {
+  const d = await apiCall('/admin/api/proxy-keys/' + encodeURIComponent(id), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled: checked })
   })
-  const d = await r.json()
   if (d.success) {
     const ki = document.querySelector('.ki[data-id="' + id + '"]')
     if (ki) {
@@ -1500,8 +1513,7 @@ const fmtTok = (n) => {
 async function loadUsage() {
   const days = document.getElementById('usage-days')?.value || '1'
   try {
-    const r = await fetch('/admin/api/usage?days=' + days)
-    const d = await r.json()
+    const d = await apiCall('/admin/api/usage?days=' + days)
     if (!d.success) throw new Error(d.message || '加载失败')
     const s = d.data || {}
     setText('u-req', fmtNum(s.totalRequests))
@@ -1580,7 +1592,7 @@ async function backupExport() {
   const hash = await adminAuthHash()
   if (!hash) { tr.innerHTML = ''; return }
   try {
-    const r = await fetch('/admin/api/backup/export', { headers: { 'X-Admin-Auth': hash } })
+    const d = await apiCall('/admin/api/backup/export', { headers: { 'X-Admin-Auth': hash } })
     if (!r.ok) { bkResult('bk-io-result', false, '导出失败: ' + (r.status === 401 ? '密码验证失败' : 'HTTP ' + r.status)); return }
     const blob = await r.blob()
     const cd = r.headers.get('Content-Disposition') || ''
@@ -1618,7 +1630,6 @@ function backupImport(file) {
         headers: { 'Content-Type': 'application/json', 'X-Admin-Auth': bkImportHash },
         body: reader.result,
       })
-      const d = await r.json()
       bkResult('bk-io-result', d.success, d.message || (r.status === 401 ? '密码验证失败' : '导入完成'))
       if (d.success) {
         toast('导入成功，即将重新登录…', 'success')
@@ -1632,8 +1643,7 @@ function backupImport(file) {
 async function backupToR2() {
   const tr = document.getElementById('bk-r2-result')
   showSpinner(tr)
-  const r = await fetch('/admin/api/backup/to-r2', { method: 'POST' })
-  const d = await r.json()
+  const d = await apiCall('/admin/api/backup/to-r2', { method: 'POST' })
   bkResult('bk-r2-result', d.success, d.message || '备份失败')
   if (d.success) backupList()
 }
@@ -1642,8 +1652,7 @@ async function backupList() {
   const el = document.getElementById('bk-r2-result')
   showSpinner(el)
   try {
-    const r = await fetch('/admin/api/backup/list')
-    const d = await r.json()
+    const d = await apiCall('/admin/api/backup/list')
     if (!d.success) { bkResult('bk-r2-result', false, d.message || '获取失败'); return }
     const list = d.data || []
     if (list.length === 0) { bkResult('bk-r2-result', false, 'R2 中暂无备份快照'); return }
@@ -1659,12 +1668,11 @@ async function backupRestore(key) {
   if (!(await cM('从快照恢复将<strong>覆盖</strong>当前所有数据，确定继续？'))) return
   const hash = await adminAuthHash()
   if (!hash) return
-  const r = await fetch('/admin/api/backup/restore', {
+  const d = await apiCall('/admin/api/backup/restore', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Admin-Auth': hash },
     body: JSON.stringify({ key: key }),
   })
-  const d = await r.json()
   bkResult('bk-r2-result', d.success, d.message || (r.status === 401 ? '密码验证失败' : '恢复失败'))
   if (d.success) {
     toast('恢复成功，即将重新登录…', 'success')
@@ -1676,12 +1684,11 @@ async function backupDelete(key) {
   if (!(await cM('确定删除此快照？'))) return
   const hash = await adminAuthHash()
   if (!hash) return
-  const r = await fetch('/admin/api/backup/delete', {
+  const d = await apiCall('/admin/api/backup/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Admin-Auth': hash },
     body: JSON.stringify({ key: key }),
   })
-  const d = await r.json()
   bkResult('bk-r2-result', d.success, d.message || (r.status === 401 ? '密码验证失败' : '删除失败'))
   if (d.success) backupList()
 }
@@ -1698,12 +1705,11 @@ async function telegramTest() {
   showSpinner(el)
   const p = tgParams()
   if (!p.botToken || !p.chatId) { bkResult('bk-tg-result', false, '请先填写 Bot Token 和 USER ID'); return }
-  const r = await fetch('/admin/api/telegram/test', {
+  const d = await apiCall('/admin/api/telegram/test', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(p),
   })
-  const d = await r.json()
   bkResult('bk-tg-result', d.success, d.message || '测试失败')
 }
 
@@ -1713,12 +1719,11 @@ async function telegramSave() {
   const p = tgParams()
   if (!p.botToken || !p.chatId) { bkResult('bk-tg-result', false, '请先填写 Bot Token 和 USER ID'); return }
   try {
-    const r = await fetch('/admin/api/telegram/save', {
+    const d = await apiCall('/admin/api/telegram/save', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(p),
     })
-    const d = await r.json()
     bkResult('bk-tg-result', d.success, d.message || (d.success ? '配置已保存' : '保存失败'))
     if (d.success) toast('Telegram 备份配置已保存', 'success')
   } catch (e) {
@@ -1731,12 +1736,11 @@ async function backupToTelegram() {
   showSpinner(el)
   const p = tgParams()
   if (!p.botToken || !p.chatId) { bkResult('bk-tg-result', false, '请先填写 Bot Token 和 USER ID'); return }
-  const r = await fetch('/admin/api/telegram/to-telegram', {
+  const d = await apiCall('/admin/api/telegram/to-telegram', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(p),
   })
-  const d = await r.json()
   bkResult('bk-tg-result', d.success, d.message || '备份失败')
 }
 
@@ -1803,11 +1807,11 @@ document.querySelectorAll('.copy-control').forEach(function (button) {
     try {
       await navigator.clipboard.writeText(text)
       button.setAttribute('data-state', 'success')
-      if (iconWrap && window.SVG_ICONS && window.SVG_ICONS.check) iconWrap.innerHTML = window.SVG_ICONS.check
+      if (iconWrap) iconWrap.innerHTML = svgInner('check')
       if (label) label.textContent = '已复制'
       setTimeout(function () {
         button.removeAttribute('data-state')
-        if (iconWrap && window.SVG_ICONS && window.SVG_ICONS.copy) iconWrap.innerHTML = window.SVG_ICONS.copy
+        if (iconWrap) iconWrap.innerHTML = svgInner('copy')
         if (label) label.textContent = originalLabel
       }, 1800)
     } catch (e) {

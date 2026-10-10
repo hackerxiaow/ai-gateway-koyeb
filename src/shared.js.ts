@@ -45,19 +45,46 @@ export const SVG_ICONS: Record<string, string> = {
   anglesLeft: `<svg width="100%" height="100%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/></svg>`
 }
 
-// 前台页面所需的客户端最小图标字典（home/login 未注入 SHARED_JS）
-export const CLIENT_ICONS = JSON.stringify({
-  copy: SVG_ICONS.copy,
-  check: SVG_ICONS.check,
-  eye: SVG_ICONS.eye,
-  eyeSlash: SVG_ICONS.eyeSlash,
-})
-
 // 服务端 TS 渲染 SVG 图标
 export function icon(name: string, cls = '', size = 16): string {
-  const code = SVG_ICONS[name] || SVG_ICONS.info
-  return `<span class="svg-icon ${cls}" style="display:inline-flex;align-items:center;justify-content:center;width:${size}px;height:${size}px;min-width:${size}px;min-height:${size}px;line-height:1;vertical-align:middle;flex-shrink:0;" aria-hidden="true">${code}</span>`
+  const id = SVG_ICONS[name] ? name : 'info'
+  // 尺寸交给 CSS 变量 --i，标记里只留 <use> 引用：
+  // 优化前每个图标内联约 440 字节（整段 SVG + 一整串内联样式），管理页有 950 个图标。
+  const style = size === 16 ? '' : ` style="--i:${size}px"`
+  return `<span class="svg-icon${cls ? ' ' + cls : ''}"${style} aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-${id}"></use></svg></span>`
 }
+
+/**
+ * 生成图标雪碧图：全部图标只输出一次 <symbol> 定义，页面其余位置用 <use> 引用。
+ * @param names 需要包含的图标名
+ */
+export function renderIconSprite(names: string[]): string {
+  const symbols = names
+    .filter((n, i) => SVG_ICONS[n] && names.indexOf(n) === i)
+    .map((n) => {
+      const svg = SVG_ICONS[n]
+      const attrs = (svg.match(/^<svg([^>]*)>/) || ['', ''])[1].replace(/\s(?:width|height)="[^"]*"/g, '').trim()
+      const inner = svg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '')
+      return `<symbol id="i-${n}" ${attrs}>${inner}</symbol>`
+    })
+    .join('')
+  return `<svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">${symbols}</svg>`
+}
+
+/**
+ * 给整页 HTML 自动注入「只含实际用到图标」的雪碧图。
+ * 扫描渲染结果里的 #i-xxx 引用，客户端脚本会动态生成的图标名由 extra 补充。
+ */
+export function withIconSprite(html: string, extra: string[] = []): string {
+  const used = new Set<string>(extra)
+  for (const m of html.matchAll(/#i-([A-Za-z0-9]+)/g)) used.add(m[1])
+  if (!used.size) return html
+  const sprite = renderIconSprite([...used])
+  return html.replace(/(<body[^>]*>)/, `$1${sprite}`)
+}
+
+/** 客户端脚本会动态生成的图标名（服务端 HTML 里不出现，必须一并放进雪碧图） */
+export const CLIENT_DYNAMIC_ICONS = ['spinner','check','alert','info','key','gauge','refresh','lock','shield','cube','times','plus','copy','plug','anglesLeft','chevronDown','chevronRight','eye','eyeSlash','signIn','signOut','search','arrowLeft','cloud','external','trash','save','download','upload','play','microphone','gift','coins','calendar','user','database','chart','overview','server','paperPlane']
 
 export function renderSiteFooter(title: string, platform?: string): string {
   return `<footer class="site-footer">
@@ -75,12 +102,14 @@ export function renderSiteFooter(title: string, platform?: string): string {
 
 // 共享 JS 工具函数 — 注入到后台页面的 <script> 块中
 export const SHARED_JS = `
-// ── 客户端全局内联 SVG 字典 ──
-window.SVG_ICONS = ${JSON.stringify(SVG_ICONS)};
+// ── 图标：只输出 <use> 引用，符号定义在页面顶部的雪碧图里 ──
+function svgInner(name) {
+  return '<svg viewBox="0 0 24 24"><use href="#i-' + name + '"></use></svg>';
+}
 function svgIcon(name, cls, size) {
   var s = size || 16;
-  var code = window.SVG_ICONS[name] || window.SVG_ICONS['info'];
-  return '<span class="svg-icon ' + (cls||'') + '" style="display:inline-flex;align-items:center;justify-content:center;width:' + s + 'px;height:' + s + 'px;min-width:' + s + 'px;min-height:' + s + 'px;line-height:1;vertical-align:middle;flex-shrink:0;" aria-hidden="true">' + code + '</span>';
+  var style = s === 16 ? '' : ' style="--i:' + s + 'px"';
+  return '<span class="svg-icon' + (cls ? ' ' + cls : '') + '"' + style + ' aria-hidden="true">' + svgInner(name) + '</span>';
 }
 
 // ── API 地址盒：网址占满中间可用空间（超长显示省略号），仅当空间过窄时才隐藏 ──

@@ -4,7 +4,7 @@ import { SITE_CONFIG } from './config'
 import type { Env } from './types'
 import { CSS_CONTENT } from './pages.css'
 import { getExternalOrigin } from './request-utils'
-import { icon, renderSiteFooter, CLIENT_ICONS } from './shared.js'
+import { icon, renderSiteFooter, withIconSprite } from './shared.js'
 
 function getPlatformLabel(_env: any, _host?: string): string {
   return 'Koyeb · PostgreSQL'
@@ -24,7 +24,6 @@ const H = (title: string) => `
   <meta name="theme-color" content="#f8fafc">
   <title>${title} — ${SITE_CONFIG.title}</title>
   <link rel="icon" href="${SITE_CONFIG.favicon}">
-  <link rel="stylesheet" href="${SITE_CONFIG.faCdn}">
   <style>${CSS_CONTENT}</style>
 </head>`
 
@@ -40,7 +39,7 @@ export async function renderHomePage(c: Context<{ Bindings: Env }>, isLoggedIn: 
     ? `${sampleProvider.id}/${sampleProvider.models.find((m) => m.enabled)?.alias || sampleProvider.models.find((m) => m.enabled)?.id || 'model'}`
     : 'provider/model'
 
-  return c.html(`<!DOCTYPE html><html lang="zh-CN">
+  const page = `<!DOCTYPE html><html lang="zh-CN">
 ${H('首页')}
 <body class="site-page home-page">
 <header class="topbar">
@@ -167,7 +166,7 @@ ${H('首页')}
 ${renderSiteFooter(SITE_CONFIG.title, getPlatformLabel(c.env, c.req.header('host')))}
 
 <script>
-window.SVG_ICONS = ${CLIENT_ICONS};
+function svgInner(name) { return '<svg viewBox="0 0 24 24"><use href="#i-' + name + '"></use></svg>' }
 (function () {
   document.querySelectorAll('.copy-control').forEach(function (button) {
     var label = button.querySelector('.copy-label')
@@ -178,14 +177,14 @@ window.SVG_ICONS = ${CLIENT_ICONS};
       try {
         await navigator.clipboard.writeText(text)
         button.setAttribute('data-state', 'success')
-        if (iconWrap && window.SVG_ICONS && window.SVG_ICONS.check) {
-          iconWrap.innerHTML = window.SVG_ICONS.check
+        if (iconWrap) {
+          iconWrap.innerHTML = svgInner('check')
         }
         if (label) label.textContent = '已复制'
         setTimeout(function () {
           button.removeAttribute('data-state')
-          if (iconWrap && window.SVG_ICONS && window.SVG_ICONS.copy) {
-            iconWrap.innerHTML = window.SVG_ICONS.copy
+          if (iconWrap) {
+            iconWrap.innerHTML = svgInner('copy')
           }
           if (label) label.textContent = originalLabel
         }, 1800)
@@ -223,5 +222,6 @@ window.SVG_ICONS = ${CLIENT_ICONS};
   })
 })()
 </script>
-</body></html>`)
+</body></html>`
+  return c.html(withIconSprite(page, ['check', 'copy']))
 }

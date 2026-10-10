@@ -2,7 +2,7 @@ import { Context } from 'hono'
 import { SITE_CONFIG } from './config'
 import type { Env } from './types'
 import { CSS_CONTENT } from './pages.css'
-import { icon, CLIENT_ICONS } from './shared.js'
+import { icon, withIconSprite } from './shared.js'
 
 const H = (title: string) => `
 <head>
@@ -11,12 +11,11 @@ const H = (title: string) => `
   <meta name="theme-color" content="#f8fafc">
   <title>${title} — ${SITE_CONFIG.title}</title>
   <link rel="icon" href="${SITE_CONFIG.favicon}">
-  <link rel="stylesheet" href="${SITE_CONFIG.faCdn}">
   <style>${CSS_CONTENT}</style>
 </head>`
 
 export async function renderLoginPage(c: Context<{ Bindings: Env }>) {
-  return c.html(`<!DOCTYPE html><html lang="zh-CN">
+  const page = `<!DOCTYPE html><html lang="zh-CN">
 ${H('登录')}
 <body class="site-page auth-page">
 <header class="topbar topbar--auth" style="width:100%">
@@ -72,7 +71,7 @@ ${H('登录')}
 </main>
 
 <script>
-window.SVG_ICONS = ${CLIENT_ICONS};
+function svgInner(name) { return '<svg viewBox="0 0 24 24"><use href="#i-' + name + '"></use></svg>' }
 (function () {
   var form = document.getElementById('login-form')
   var username = document.getElementById('u')
@@ -99,8 +98,8 @@ window.SVG_ICONS = ${CLIENT_ICONS};
     password.type = show ? 'text' : 'password'
     toggle.setAttribute('aria-label', show ? '隐藏密码' : '显示密码')
     var iconWrap = toggle.querySelector('.svg-icon')
-    if (iconWrap && window.SVG_ICONS) {
-      iconWrap.innerHTML = show ? window.SVG_ICONS.eyeSlash : window.SVG_ICONS.eye
+    if (iconWrap) {
+      iconWrap.innerHTML = svgInner(show ? 'eyeSlash' : 'eye')
     }
     password.focus({ preventScroll: true })
   })
@@ -138,5 +137,6 @@ window.SVG_ICONS = ${CLIENT_ICONS};
   })
 })()
 </script>
-</body></html>`)
+</body></html>`
+  return c.html(withIconSprite(page, ['eye', 'eyeSlash', 'check']))
 }
