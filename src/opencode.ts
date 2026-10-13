@@ -29,7 +29,14 @@ function createOpenCodeId(prefix: string): string {
   }
   idCounter++
 
-  const now = BigInt(currentTimestamp) * BigInt(0x1000) + BigInt(idCounter)
+  // 关键：官方 1.19.0 的 ses_ 会话 ID 使用按位取反的倒序时间戳（高位呈现为 ecb...，计数器从 0xfff 递减）
+  // 而 msg_ 使用正序时间戳（高位呈现为 134...，计数器递增），上游免费层严格校验该编码规则。
+  const isDesc = prefix === 'ses'
+  const ts = BigInt(currentTimestamp)
+  const baseTs = isDesc ? ((~ts) & 0xffffffffffffn) : ts
+  const counter = isDesc ? BigInt(0xfff - (idCounter % 0x1000)) : BigInt(idCounter)
+  const now = baseTs * BigInt(0x1000) + counter
+
   let hex = ''
   for (let i = 0; i < 6; i++) {
     const byte = Number((now >> BigInt(40 - 8 * i)) & BigInt(0xff))
