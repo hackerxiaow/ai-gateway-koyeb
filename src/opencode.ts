@@ -2,7 +2,7 @@ import type { ApiKeyEntry, Env } from './types'
 
 export const OPENCODE_PROVIDER_ID = 'opencode'
 
-const OPENCODE_VERSION = '1.18.31'
+const OPENCODE_VERSION = '1.19.0'
 // 免费层模型出字慢，流式响应可能持续数分钟；超时过短会在生成中途掐断连接，客户端表现为「重新连接」
 const OPENCODE_TIMEOUT_MS = 300000
 
@@ -39,7 +39,8 @@ function createOpenCodeId(prefix: string): string {
   return `${prefix}_${hex}${randomBase62(14)}`
 }
 
-const OPENCODE_CORE_TOOL_NAMES = ['read', 'write', 'edit', 'shell', 'glob', 'grep']
+// 官方 1.19.0 核心工具集扩充为 10 个（shell 改名为 bash，且严格字母序排序）
+const OPENCODE_CORE_TOOL_NAMES = ['bash', 'edit', 'glob', 'grep', 'read', 'skill', 'task', 'todowrite', 'webfetch', 'write']
 // 上游免费层按「工具名」校验，不看描述内容；描述写成劝阻语，避免模型真的去调用这些占位工具。
 const OPENCODE_PLACEHOLDER_TOOL_DESCRIPTION =
   'Do not call this tool. It exists only for API compatibility and must never be invoked.'
@@ -125,11 +126,12 @@ function createRequestHeaders(apiKey: string, requestId: string, sessionId: stri
   return new Headers({
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${apiKey}`,
-    'User-Agent': `opencode/${OPENCODE_VERSION} ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13`,
+    'User-Agent': `opencode/${OPENCODE_VERSION} ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14`,
     'x-opencode-client': 'cli',
     'x-opencode-project': 'global',
     'x-opencode-request': requestId,
     'x-opencode-session': sessionId,
+    'x-opencode-session-id': sessionId,
   })
 }
 
@@ -348,7 +350,7 @@ export async function proxyOpenCodeRequest(options: OpenCodeRequestOptions): Pro
         // 强制开启 stream，满足 OpenCode 免费层校验
         parsed.stream = true
 
-        // 注入 / 补齐 OpenCode 核心工具列表，满足 OpenCode 免费层校验
+        // 注入 / 补齐 OpenCode 核心工具列表，满足 OpenCode 免费层校验（必须严格字母序）
         if (!Array.isArray(parsed.tools) || parsed.tools.length === 0) {
           parsed.tools = OPENCODE_CORE_TOOLS
         } else {
@@ -358,6 +360,11 @@ export async function proxyOpenCodeRequest(options: OpenCodeRequestOptions): Pro
           const missingTools = OPENCODE_CORE_TOOLS.filter((t) => !existingNames.has(t.function.name))
           parsed.tools = [...parsed.tools, ...missingTools]
         }
+        parsed.tools = [...parsed.tools].sort((a: any, b: any) => {
+          const na = a?.function?.name || a?.name || ''
+          const nb = b?.function?.name || b?.name || ''
+          return na.localeCompare(nb)
+        })
         upstreamBody = JSON.stringify(parsed)
       }
     } catch {
