@@ -98,15 +98,25 @@ export function resolveOpenCodeUrls(env: Env): string[] {
   return [...new Set(parts)]
 }
 
+export const OPENCODE_DEFAULT_MIRRORS = [
+  'https://opencode.ai.cmliussss.net/zen/v1',
+  'https://opencode.fastly.cmliussss.net/zen/v1',
+  'https://opencode.gcore.cmliussss.net/zen/v1',
+]
+
 /**
  * 解析提供商生效的 OpenCode 镜像地址：
- * 优先使用后台配置的 provider.mirrorUrls, 为空时回退 OPENCODE_MIRRORS_URL 环境变量。
+ * 优先使用后台配置的 provider.mirrorUrls, 为空时回退 OPENCODE_MIRRORS_URL 环境变量，
+ * 若仍为空则强兜底到默认三条可用镜像。
  */
 export function resolveProviderMirrorUrls(env: Env, provider?: { mirrorUrls?: string[] }): string[] {
   if (provider?.mirrorUrls && provider.mirrorUrls.length > 0) {
-    return [...new Set(provider.mirrorUrls.map(s => s.trim()).filter(Boolean))]
+    const list = [...new Set(provider.mirrorUrls.map(s => s.trim()).filter(Boolean))]
+    if (list.length > 0) return list
   }
-  return resolveOpenCodeUrls(env)
+  const fromEnv = resolveOpenCodeUrls(env)
+  if (fromEnv.length > 0) return fromEnv
+  return [...OPENCODE_DEFAULT_MIRRORS]
 }
 
 function getMirrorOrder(urls: string[], random: () => number): string[] {
@@ -406,47 +416,31 @@ export async function proxyOpenCodeRequest(options: OpenCodeRequestOptions): Pro
       }
     }
   } else {
-    // 未配置自定义 Key 时：官方源站（带 'public'）本身也是可用节点，优先尝试官方
-    try {
-      const response = await requestUpstream(
-        fetcher,
-        officialUrl,
-        'public',
-        upstreamOptions,
-        requestId,
-        sessionId
-      )
-      if (response.ok) {
-        if (!clientWantsStream && (response.headers.get('content-type') || '').includes('text/event-stream')) {
-          return aggregateOpenCodeStream(response, requestedModel)
+    // 未配置自定义 Key 时：优先轮询镜像节点（规避官方源站对机房 IP 的直接拦截），官方源站作为末尾兜底
+    const candidateBases = [
+      ...getMirrorOrder(options.mirrorUrls, random),
+      options.baseUrl,
+    ]
+    for (const base of candidateBases) {
+      try {
+        const response = await requestUpstream(
+          fetcher,
+          buildUrl(base, options.subPath, options.search),
+          'public',
+          upstreamOptions,
+          requestId,
+          sessionId
+        )
+        if (response.ok) {
+          if (!clientWantsStream && (response.headers.get('content-type') || '').includes('text/event-stream')) {
+            return aggregateOpenCodeStream(response, requestedModel)
+          }
+          return response
         }
-        return response
+        mirrorFailure = await storeFailure(response)
+      } catch (error) {
+        lastTransportError = error
       }
-      officialFailure = await storeFailure(response)
-    } catch (error) {
-      lastTransportError = error
-    }
-  }
-
-  for (const mirror of getMirrorOrder(options.mirrorUrls, random)) {
-    try {
-      const response = await requestUpstream(
-        fetcher,
-        buildUrl(mirror, options.subPath, options.search),
-        'public',
-        upstreamOptions,
-        requestId,
-        sessionId
-      )
-      if (response.ok) {
-        if (!clientWantsStream && (response.headers.get('content-type') || '').includes('text/event-stream')) {
-          return aggregateOpenCodeStream(response, requestedModel)
-        }
-        return response
-      }
-      mirrorFailure = await storeFailure(response)
-    } catch (error) {
-      lastTransportError = error
     }
   }
 
