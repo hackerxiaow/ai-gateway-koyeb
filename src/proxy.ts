@@ -298,17 +298,37 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
       return queryAgnesVideoStatus(statusProvider.baseUrl, statusApiKey, statusTaskId)
     }
 
+    let providerId = ''
+    let modelId = ''
+
     const parsed = parseModelId(model as string)
-    if (!parsed) {
-      return c.json({
-        error: {
-          message: `模型格式错误 "${model}"，请使用 提供商ID/模型ID 格式`,
-          type: 'invalid_request_error',
-        },
-      }, 400)
+    if (parsed) {
+      providerId = parsed.providerId
+      modelId = parsed.modelId
+    } else {
+      // 容错匹配：如果客户端未携带 "provider/model" 前缀（如原生 OpenCode 客户端直接请求 "big-pickle"）
+      // 自动在所有已启用的提供商模型列表中查找该模型
+      const allProviders = await getProviders(c.env)
+      for (const p of allProviders) {
+        if (!p.enabled) continue
+        const matched = findModelConfig(p.models, model as string)
+        if (matched && matched.enabled) {
+          providerId = p.id
+          modelId = matched.id
+          break
+        }
+      }
+
+      if (!providerId) {
+        return c.json({
+          error: {
+            message: `模型格式错误 "${model}"，未找到对应的提供商，请使用 提供商ID/模型ID 格式`,
+            type: 'invalid_request_error',
+          },
+        }, 400)
+      }
     }
 
-    const { providerId, modelId } = parsed
     const provider = await getProvider(c.env, providerId)
 
     if (!provider) {

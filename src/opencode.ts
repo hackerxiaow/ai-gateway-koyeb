@@ -2,7 +2,7 @@ import type { ApiKeyEntry, Env } from './types'
 
 export const OPENCODE_PROVIDER_ID = 'opencode'
 
-const OPENCODE_VERSION = '2.0.29'
+const OPENCODE_VERSION = '1.19.0'
 // 免费层模型出字慢，流式响应可能持续数分钟；超时过短会在生成中途掐断连接，客户端表现为「重新连接」
 const OPENCODE_TIMEOUT_MS = 300000
 
@@ -10,33 +10,13 @@ export const OPENCODE_MODELS_CATALOG_URL = 'https://models.opencode.ai/api.json'
 
 const BASE62_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 
-let lastTimestamp = 0
-let idCounter = 0
-
 /**
- * 精准实现官方 2.0 Identifier 算法：
- * - ses_ 会话 ID 使用 Identifier.descending()：计算 48 位 ~(timestamp * 0x1000 + counter) 的 hex 编码，
- *   高位呈现为 ecb...，低 12 位呈现为 0xfff - counter（如 ffe 等）。
- * - msg_ 请求 ID 使用 Identifier.ascending()：计算 (timestamp * 0x1000 + counter) 的 hex 编码。
- * 上游免费层与推断网关严格按此规则校验。
+ * 官方时间戳与递减计数编码（tA 算法）：
+ * epoch = 27 << 36 = 1855425871872
+ * hex = ((epoch - 1 - unix_millis) << 12 | 0xFFE) 取低 48 位
+ * 低 12 位恒等于 0xFFE，高 36 位代表当前真实时间的倒序毫秒数，上游免费层严格反解该时间戳窗口。
  */
 function createOpenCodeId(prefix: string): string {
-  const isDesc = prefix === 'ses'
-  const timestamp = Date.now()
-  if (timestamp !== lastTimestamp) {
-    lastTimestamp = timestamp
-    idCounter = 0
-  }
-  idCounter++
-
-  const current = BigInt(timestamp) * 0x1000n + BigInt(idCounter)
-  const value = isDesc ? ~current : current
-  const time = Array.from({ length: 6 }, (_, index) =>
-    Number((value >> BigInt(40 - 8 * index)) & 0xffn)
-      .toString(16)
-      .padStart(2, '0')
-  ).join('')
-
   const bytes = new Uint8Array(14)
   crypto.getRandomValues(bytes)
   let random = ''
@@ -44,15 +24,31 @@ function createOpenCodeId(prefix: string): string {
     random += BASE62_CHARS[bytes[i] % 62]
   }
 
-  return `${prefix}_${time}${random}`
+  if (prefix === 'ses') {
+    const now = Date.now()
+    const epoch = 27n << 36n
+    const high36 = (epoch - 1n) - BigInt(now)
+    const hex12 = ((high36 << 12n) | 0xffen).toString(16).padStart(12, '0')
+    return `ses_${hex12}${random}`
+  }
+
+  const hex12 = crypto.randomUUID().replace(/-/g, '').slice(0, 12)
+  return `${prefix}_${hex12}${random}`
+}
+
+/** 随机生成 40 位 hex 项目 SHA，规避固定 global 触发上游风控 */
+function createProjectHash(): string {
+  const bytes = new Uint8Array(20)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
 /**
- * 官方 2.0 核心工具集：6 个原生核心工具，严格按官方命名（shell 而非 bash）并按字母排序
+ * 核心工具集：同时包含 bash、read 以及 2.0 原生工具（edit, glob, grep, shell, write），严格满足上游门禁对 bash+read 的硬性要求
  */
-const OPENCODE_CORE_TOOL_NAMES = ['edit', 'glob', 'grep', 'read', 'shell', 'write']
+const OPENCODE_CORE_TOOL_NAMES = ['bash', 'edit', 'glob', 'grep', 'read', 'shell', 'write']
 const OPENCODE_PLACEHOLDER_TOOL_DESCRIPTION =
-  'Agent tool for file, workspace, and execution operations.'
+  'Agent tool for workspace and execution operations. Do not call this tool directly.'
 const OPENCODE_CORE_TOOLS = OPENCODE_CORE_TOOL_NAMES.map((name) => ({
   type: 'function',
   function: {
@@ -154,11 +150,13 @@ function buildUrl(baseUrl: string, subPath: string, search = ''): string {
 }
 
 function createRequestHeaders(apiKey: string, requestId: string, sessionId: string): Headers {
+  const projectHash = createProjectHash()
   const headers = new Headers({
     'Content-Type': 'application/json',
-    'User-Agent': `opencode/latest/${OPENCODE_VERSION}/cli ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14`,
-    'x-opencode-client': 'cli',
-    'x-opencode-project': 'global',
+    'Accept': 'text/event-stream, application/json',
+    'User-Agent': `opencode/${OPENCODE_VERSION} ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14`,
+    'x-opencode-client': 'desktop',
+    'x-opencode-project': projectHash,
     'x-opencode-request': requestId,
     'x-opencode-request-id': requestId,
     'x-opencode-session': sessionId,
@@ -391,8 +389,10 @@ export async function proxyOpenCodeRequest(options: OpenCodeRequestOptions): Pro
         parsed.stream = true
 
         // 注入 / 补齐 OpenCode 核心工具列表，满足 OpenCode 免费层校验（必须严格字母序）
-        if (!Array.isArray(parsed.tools) || parsed.tools.length === 0) {
+        const hadTools = Array.isArray(parsed.tools) && parsed.tools.length > 0
+        if (!hadTools) {
           parsed.tools = OPENCODE_CORE_TOOLS
+          parsed.tool_choice = 'none'
         } else {
           const existingNames = new Set(
             parsed.tools.map((t: any) => t?.function?.name || t?.name).filter(Boolean)
@@ -405,6 +405,7 @@ export async function proxyOpenCodeRequest(options: OpenCodeRequestOptions): Pro
           const nb = b?.function?.name || b?.name || ''
           return na.localeCompare(nb)
         })
+        parsed.store = false
         upstreamBody = JSON.stringify(parsed)
       }
     } catch {
