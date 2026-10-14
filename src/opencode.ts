@@ -1,4 +1,11 @@
 import type { ApiKeyEntry, Env } from './types'
+import {
+  OPENCODE_COMPAT_HEAD,
+  OPENCODE_COMPAT_TAIL,
+  OPENCODE_TITLE_MARKER,
+  OPENCODE_CLI_MARKER,
+  OPENCODE_OFFICIAL_TOOLS,
+} from './opencode-compat'
 
 export const OPENCODE_PROVIDER_ID = 'opencode'
 
@@ -43,20 +50,79 @@ function createProjectHash(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
+// 免费层内容闸门（2026-10-15 逆向，详见 opencode-compat.ts）：
+// - 无 tools 请求：system 必须含官方「标题生成」prompt 片段；
+// - 带 tools 请求：system 必须含官方 CLI prompt 片段，且 tools 以官方 11 工具开头。
+const OPENCODE_TITLE_BLOCK = `${OPENCODE_COMPAT_HEAD}\n${OPENCODE_TITLE_MARKER}\n${OPENCODE_COMPAT_TAIL}`
+const OPENCODE_CLI_BLOCK = `${OPENCODE_COMPAT_HEAD}\n${OPENCODE_CLI_MARKER}\n${OPENCODE_COMPAT_TAIL}`
+const OPENCODE_TITLE_PROBE = OPENCODE_TITLE_MARKER.slice(0, 80)
+const OPENCODE_CLI_PROBE = OPENCODE_CLI_MARKER.slice(0, 80)
+
+/** 官方工具集比对键：name + parameters（上游校验依据，description 不参与）。 */
+function officialToolKey(tool: any): string {
+  return `${tool?.function?.name ?? tool?.name}:${JSON.stringify(tool?.function?.parameters)}`
+}
+
+/** 幂等地把兼容标记注入 messages（system 文本；缺失 system 时插到最前）。 */
+function injectCompatMarker(messages: any[], block: string, probe: string): void {
+  const containsProbe = (value: unknown): boolean =>
+    typeof value === 'string' && value.includes(probe)
+
+  const already = messages.some((message: any) => {
+    if (!message) return false
+    if (containsProbe(message.content)) return true
+    if (Array.isArray(message.content)) {
+      return message.content.some((part: any) => containsProbe(part?.text))
+    }
+    return false
+  })
+  if (already) return
+
+  const systemMessage = messages.find((message: any) => message && message.role === 'system')
+  if (systemMessage) {
+    if (typeof systemMessage.content === 'string') {
+      systemMessage.content = `${systemMessage.content}\n\n${block}`
+      return
+    }
+    if (Array.isArray(systemMessage.content)) {
+      systemMessage.content.push({ type: 'text', text: block })
+      return
+    }
+  }
+  messages.unshift({ role: 'system', content: block })
+}
+
 /**
- * 核心工具集：同时包含 bash、read 以及 2.0 原生工具（edit, glob, grep, shell, write），严格满足上游门禁对 bash+read 的硬性要求
+ * 免费层兼容处理：
+ * - 请求带 tools：tools 前置官方 11 工具定义（name + parameters 原样，description 为劝阻语），
+ *   并剔除客户端与官方重名的工具（上游会对重名工具报 "must not be specified more than once"）；
+ *   system 注入官方 CLI prompt 片段。
+ * - 请求不带 tools：system 注入官方「标题生成」prompt 片段即可（实测无需注入 tools）。
+ * 幂等：重复调用（重试/客户端已注入）不会二次追加。
  */
-const OPENCODE_CORE_TOOL_NAMES = ['bash', 'edit', 'glob', 'grep', 'read', 'shell', 'write']
-const OPENCODE_PLACEHOLDER_TOOL_DESCRIPTION =
-  'Agent tool for workspace and execution operations. Do not call this tool directly.'
-const OPENCODE_CORE_TOOLS = OPENCODE_CORE_TOOL_NAMES.map((name) => ({
-  type: 'function',
-  function: {
-    name,
-    description: OPENCODE_PLACEHOLDER_TOOL_DESCRIPTION,
-    parameters: { type: 'object', properties: {} },
-  },
-}))
+export function ensureOpenCodeCompat(payload: any): void {
+  const messages = Array.isArray(payload?.messages) ? payload.messages : null
+  if (!messages || messages.length === 0) return
+
+  const hasTools = Array.isArray(payload.tools) && payload.tools.length > 0
+
+  if (hasTools) {
+    const tools = payload.tools as any[]
+    const officialNames = new Set(OPENCODE_OFFICIAL_TOOLS.map((tool) => tool.function.name))
+    const clientTools = tools.filter((tool) => !officialNames.has(tool?.function?.name ?? tool?.name))
+    const alreadyPrepended =
+      clientTools.length === tools.length &&
+      tools.length >= OPENCODE_OFFICIAL_TOOLS.length &&
+      OPENCODE_OFFICIAL_TOOLS.every((official, index) => officialToolKey(tools[index]) === officialToolKey(official))
+    if (!alreadyPrepended) {
+      payload.tools = [...OPENCODE_OFFICIAL_TOOLS.map((tool) => JSON.parse(JSON.stringify(tool))), ...clientTools]
+    }
+    injectCompatMarker(messages, OPENCODE_CLI_BLOCK, OPENCODE_CLI_PROBE)
+    return
+  }
+
+  injectCompatMarker(messages, OPENCODE_TITLE_BLOCK, OPENCODE_TITLE_PROBE)
+}
 
 interface OpenCodeRequestOptions {
   baseUrl: string
@@ -146,7 +212,10 @@ function getMirrorOrder(urls: string[], random: () => number): string[] {
 }
 
 function buildUrl(baseUrl: string, subPath: string, search = ''): string {
-  return `${baseUrl.replace(/\/+$/, '')}/${subPath.replace(/^\/+/, '')}${search}`
+  // 2026-10 上游把匿名免费层入口从 /zen/v1 迁到 /inference/v1：旧路径对 Bearer public 一律 403。
+  // 配置（后台/环境变量）里仍是旧写法，这里统一改写，避免改配置。
+  const normalized = baseUrl.replace(/\/zen\/v1(?=\/|$)/, '/inference/v1')
+  return `${normalized.replace(/\/+$/, '')}/${subPath.replace(/^\/+/, '')}${search}`
 }
 
 function createRequestHeaders(apiKey: string, requestId: string, sessionId: string): Headers {
@@ -375,7 +444,7 @@ export async function proxyOpenCodeRequest(options: OpenCodeRequestOptions): Pro
   let mirrorFailure: StoredFailure | null = null
   let lastTransportError: unknown = null
 
-  // 预处理 POST chat/completions 请求体：适配 OpenCode 规则（强制 stream: true，补齐核心工具定义）
+  // 预处理 POST chat/completions 请求体：适配 OpenCode 免费层规则（强制 stream + 内容指纹注入）
   let clientWantsStream = true
   let upstreamBody = options.body
   let requestedModel = ''
@@ -388,23 +457,8 @@ export async function proxyOpenCodeRequest(options: OpenCodeRequestOptions): Pro
         clientWantsStream = parsed.stream !== false && parsed.stream !== undefined
         parsed.stream = true
 
-        // 注入 / 补齐 OpenCode 核心工具列表，满足 OpenCode 免费层校验（必须严格字母序）
-        const hadTools = Array.isArray(parsed.tools) && parsed.tools.length > 0
-        if (!hadTools) {
-          parsed.tools = OPENCODE_CORE_TOOLS
-          parsed.tool_choice = 'none'
-        } else {
-          const existingNames = new Set(
-            parsed.tools.map((t: any) => t?.function?.name || t?.name).filter(Boolean)
-          )
-          const missingTools = OPENCODE_CORE_TOOLS.filter((t) => !existingNames.has(t.function.name))
-          parsed.tools = [...parsed.tools, ...missingTools]
-        }
-        parsed.tools = [...parsed.tools].sort((a: any, b: any) => {
-          const na = a?.function?.name || a?.name || ''
-          const nb = b?.function?.name || b?.name || ''
-          return na.localeCompare(nb)
-        })
+        // 免费层内容闸门：system 注入官方 prompt 片段；带 tools 时前置官方工具定义（详见 opencode-compat.ts）
+        ensureOpenCodeCompat(parsed)
         parsed.store = false
         upstreamBody = JSON.stringify(parsed)
       }
@@ -447,11 +501,12 @@ export async function proxyOpenCodeRequest(options: OpenCodeRequestOptions): Pro
       }
     }
   } else {
-    // 未配置自定义 Key 时：优先轮询镜像节点（规避官方源站对机房 IP 的直接拦截），官方源站作为末尾兜底
+    // 未配置自定义 Key 时：官方 /inference/v1（免费层新入口，2026-10-15 实测直连可用）优先，
+    // 镜像节点作为兜底；旧 /zen/v1 已对匿名请求全量 403，由 buildUrl 统一改写为 /inference/v1。
     const candidateBases = [
-      ...getMirrorOrder(options.mirrorUrls, random),
       options.baseUrl,
       'https://opencode.ai/inference/v1',
+      ...getMirrorOrder(options.mirrorUrls, random),
     ]
     const uniqueBases = [...new Set(candidateBases)]
 
