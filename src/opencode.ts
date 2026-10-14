@@ -2,55 +2,57 @@ import type { ApiKeyEntry, Env } from './types'
 
 export const OPENCODE_PROVIDER_ID = 'opencode'
 
-const OPENCODE_VERSION = '1.19.0'
+const OPENCODE_VERSION = '2.0.29'
 // 免费层模型出字慢，流式响应可能持续数分钟；超时过短会在生成中途掐断连接，客户端表现为「重新连接」
 const OPENCODE_TIMEOUT_MS = 300000
 
-const BASE62_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+export const OPENCODE_MODELS_CATALOG_URL = 'https://models.opencode.ai/api.json'
 
-function randomBase62(length: number): string {
-  const bytes = new Uint8Array(length)
-  crypto.getRandomValues(bytes)
-  let result = ''
-  for (let i = 0; i < length; i++) {
-    result += BASE62_CHARS[bytes[i] % 62]
-  }
-  return result
-}
+const BASE62_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 
 let lastTimestamp = 0
 let idCounter = 0
 
+/**
+ * 精准实现官方 2.0 Identifier 算法：
+ * - ses_ 会话 ID 使用 Identifier.descending()：计算 48 位 ~(timestamp * 0x1000 + counter) 的 hex 编码，
+ *   高位呈现为 ecb...，低 12 位呈现为 0xfff - counter（如 ffe 等）。
+ * - msg_ 请求 ID 使用 Identifier.ascending()：计算 (timestamp * 0x1000 + counter) 的 hex 编码。
+ * 上游免费层与推断网关严格按此规则校验。
+ */
 function createOpenCodeId(prefix: string): string {
-  const currentTimestamp = Date.now()
-  if (currentTimestamp !== lastTimestamp) {
-    lastTimestamp = currentTimestamp
+  const isDesc = prefix === 'ses'
+  const timestamp = Date.now()
+  if (timestamp !== lastTimestamp) {
+    lastTimestamp = timestamp
     idCounter = 0
   }
   idCounter++
 
-  // 关键：官方 1.19.0 的 ses_ 会话 ID 使用按位取反的倒序时间戳（高位呈现为 ecb...，计数器从 0xfff 递减）
-  // 而 msg_ 使用正序时间戳（高位呈现为 134...，计数器递增），上游免费层严格校验该编码规则。
-  const isDesc = prefix === 'ses'
-  const ts = BigInt(currentTimestamp)
-  const baseTs = isDesc ? ((~ts) & 0xffffffffffffn) : ts
-  const counter = isDesc ? BigInt(0xfff - (idCounter % 0x1000)) : BigInt(idCounter)
-  const now = baseTs * BigInt(0x1000) + counter
+  const current = BigInt(timestamp) * 0x1000n + BigInt(idCounter)
+  const value = isDesc ? ~current : current
+  const time = Array.from({ length: 6 }, (_, index) =>
+    Number((value >> BigInt(40 - 8 * index)) & 0xffn)
+      .toString(16)
+      .padStart(2, '0')
+  ).join('')
 
-  let hex = ''
-  for (let i = 0; i < 6; i++) {
-    const byte = Number((now >> BigInt(40 - 8 * i)) & BigInt(0xff))
-    hex += byte.toString(16).padStart(2, '0')
+  const bytes = new Uint8Array(14)
+  crypto.getRandomValues(bytes)
+  let random = ''
+  for (let i = 0; i < 14; i++) {
+    random += BASE62_CHARS[bytes[i] % 62]
   }
 
-  return `${prefix}_${hex}${randomBase62(14)}`
+  return `${prefix}_${time}${random}`
 }
 
-// 官方 1.19.0 核心工具集扩充为 10 个（shell 改名为 bash，且严格字母序排序）
-const OPENCODE_CORE_TOOL_NAMES = ['bash', 'edit', 'glob', 'grep', 'read', 'skill', 'task', 'todowrite', 'webfetch', 'write']
-// 上游免费层按「工具名」校验，不看描述内容；描述写成劝阻语，避免模型真的去调用这些占位工具。
+/**
+ * 官方 2.0 核心工具集：6 个原生核心工具，严格按官方命名（shell 而非 bash）并按字母排序
+ */
+const OPENCODE_CORE_TOOL_NAMES = ['edit', 'glob', 'grep', 'read', 'shell', 'write']
 const OPENCODE_PLACEHOLDER_TOOL_DESCRIPTION =
-  'Do not call this tool. It exists only for API compatibility and must never be invoked.'
+  'Agent tool for file, workspace, and execution operations.'
 const OPENCODE_CORE_TOOLS = OPENCODE_CORE_TOOL_NAMES.map((name) => ({
   type: 'function',
   function: {
@@ -90,17 +92,29 @@ export function isOpenCodeProvider(providerId: string): boolean {
   return providerId === OPENCODE_PROVIDER_ID
 }
 
+/**
+ * 免费模型识别过滤器：
+ * 匹配所有 -free 模型、以及官方声明免费的免 token 模型（big-pickle, grok-code, gpt-5-nano 等）
+ */
 export function filterOpenCodeModels<T extends { id?: unknown }>(models: T[]): T[] {
-  return models.filter((model) => (
-    typeof model.id === 'string'
-    && /^[A-Za-z0-9._:/-]+$/.test(model.id)
-    && (model.id === 'big-pickle' || model.id.endsWith('-free'))
-  ))
+  return models.filter((model) => {
+    if (typeof model.id !== 'string') return false
+    const id = model.id
+    if (!/^[A-Za-z0-9._:/-]+$/.test(id)) return false
+    return (
+      id.endsWith('-free') ||
+      id.includes('-free') ||
+      id === 'big-pickle' ||
+      id === 'grok-code' ||
+      id === 'gpt-5-nano' ||
+      id === 'cat-jam-free' ||
+      id === 'space-bunny-free'
+    )
+  })
 }
 
 export function resolveOpenCodeUrls(env: Env): string[] {
   const raw = env.OPENCODE_MIRRORS_URL || ''
-  // 兼容换行符、逗号、空格分隔；过滤空白；全局去重
   const parts = raw.split('\n').flatMap(s => s.split(',')).map(s => s.trim()).filter(Boolean)
   return [...new Set(parts)]
 }
@@ -140,16 +154,26 @@ function buildUrl(baseUrl: string, subPath: string, search = ''): string {
 }
 
 function createRequestHeaders(apiKey: string, requestId: string, sessionId: string): Headers {
-  return new Headers({
+  const headers = new Headers({
     'Content-Type': 'application/json',
-    'Authorization': `Bearer ${apiKey}`,
-    'User-Agent': `opencode/${OPENCODE_VERSION} ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14`,
+    'User-Agent': `opencode/latest/${OPENCODE_VERSION}/cli ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14`,
     'x-opencode-client': 'cli',
     'x-opencode-project': 'global',
     'x-opencode-request': requestId,
+    'x-opencode-request-id': requestId,
     'x-opencode-session': sessionId,
     'x-opencode-session-id': sessionId,
+    'x-session-affinity': sessionId,
+    'X-Session-Id': sessionId,
   })
+
+  if (apiKey && apiKey !== 'public') {
+    headers.set('Authorization', `Bearer ${apiKey}`)
+  } else {
+    headers.set('Authorization', 'Bearer public')
+  }
+
+  return headers
 }
 
 async function storeFailure(response: Response): Promise<StoredFailure> {
@@ -353,7 +377,7 @@ export async function proxyOpenCodeRequest(options: OpenCodeRequestOptions): Pro
   let mirrorFailure: StoredFailure | null = null
   let lastTransportError: unknown = null
 
-  // 预处理 POST chat/completions 请求体：适配 OpenCode 免费层规则（强制 stream: true，补齐核心工具定义）
+  // 预处理 POST chat/completions 请求体：适配 OpenCode 规则（强制 stream: true，补齐核心工具定义）
   let clientWantsStream = true
   let upstreamBody = options.body
   let requestedModel = ''
@@ -364,7 +388,6 @@ export async function proxyOpenCodeRequest(options: OpenCodeRequestOptions): Pro
       if (parsed && typeof parsed === 'object') {
         requestedModel = typeof parsed.model === 'string' ? parsed.model : ''
         clientWantsStream = parsed.stream !== false && parsed.stream !== undefined
-        // 强制开启 stream，满足 OpenCode 免费层校验
         parsed.stream = true
 
         // 注入 / 补齐 OpenCode 核心工具列表，满足 OpenCode 免费层校验（必须严格字母序）
@@ -427,8 +450,11 @@ export async function proxyOpenCodeRequest(options: OpenCodeRequestOptions): Pro
     const candidateBases = [
       ...getMirrorOrder(options.mirrorUrls, random),
       options.baseUrl,
+      'https://opencode.ai/inference/v1',
     ]
-    for (const base of candidateBases) {
+    const uniqueBases = [...new Set(candidateBases)]
+
+    for (const base of uniqueBases) {
       try {
         const response = await requestUpstream(
           fetcher,
@@ -489,19 +515,82 @@ export async function testOpenCodeModel(
   }
 }
 
+/**
+ * 获取 OpenCode 官方与镜像模型列表：
+ * 1. 优先请求官方最新模型全量元数据源 https://models.opencode.ai/api.json，同步所有最新模型与免费模型。
+ * 2. 若失败则回退到通过 proxyOpenCodeRequest 请求 /models 端点。
+ */
 export async function fetchOpenCodeModels(
   baseUrl: string,
   apiKeys: ApiKeyEntry[],
   mirrorUrls: string[],
   fetcher?: typeof fetch
 ): Promise<OpenCodeTestResult> {
+  const f = fetcher ?? fetch
+  const hasKey = apiKeys.some((k) => k.enabled && k.key)
+
+  // 1. 优先尝试从官方最新模型元数据仓库获取
+  try {
+    const catalogRes = await f(OPENCODE_MODELS_CATALOG_URL, {
+      headers: {
+        'User-Agent': `opencode/latest/${OPENCODE_VERSION}/cli`,
+        'Accept': 'application/json',
+      },
+      signal: AbortSignal.timeout(10000),
+    })
+
+    if (catalogRes.ok) {
+      const catalogData = (await catalogRes.json()) as Record<string, any>
+      const opencodeModels = catalogData?.opencode?.models || {}
+      const entries = Object.entries(opencodeModels)
+
+      if (entries.length > 0) {
+        const modelsList = entries.map(([id, m]: [string, any]) => {
+          const isFree = Boolean(
+            (m.cost && m.cost.input === 0 && m.cost.output === 0) ||
+            id.endsWith('-free') ||
+            id.includes('-free') ||
+            id === 'big-pickle' ||
+            id === 'grok-code' ||
+            id === 'gpt-5-nano'
+          )
+          return {
+            id,
+            object: 'model',
+            created: m.release_date ? Math.floor(new Date(m.release_date).getTime() / 1000) : 1791986000,
+            owned_by: 'opencode',
+            name: m.name || id,
+            description: m.description,
+            free: isFree,
+          }
+        })
+
+        // 若无有效 Key，则默认筛选出所有官方最新免费模型（共 40 款左右）；若有 Key 则展示全量
+        const filtered = hasKey ? modelsList : modelsList.filter((m) => m.free)
+
+        return {
+          success: true,
+          message: '连接成功（已同步官方最新 2.0 模型目录）',
+          statusCode: 200,
+          data: {
+            object: 'list',
+            data: filtered,
+          },
+        }
+      }
+    }
+  } catch {
+    // 回退到 /models 接口
+  }
+
+  // 2. 回退：通过镜像/直连获取 /models
   const response = await proxyOpenCodeRequest({
     baseUrl,
     apiKeys,
     mirrorUrls,
     method: 'GET',
     subPath: 'models',
-    fetcher,
+    fetcher: f,
   })
 
   if (!response.ok) {
@@ -515,13 +604,15 @@ export async function fetchOpenCodeModels(
 
   try {
     const data = await response.json() as { data?: Array<{ id?: unknown }> }
+    const rawList = Array.isArray(data.data) ? data.data : []
+    const list = hasKey ? rawList : filterOpenCodeModels(rawList)
     return {
       success: true,
       message: '连接成功',
       statusCode: response.status,
       data: {
         ...data,
-        data: Array.isArray(data.data) ? filterOpenCodeModels(data.data) : [],
+        data: list,
       },
     }
   } catch (err) {
