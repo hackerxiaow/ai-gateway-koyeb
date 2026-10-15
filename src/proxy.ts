@@ -298,36 +298,18 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
       return queryAgnesVideoStatus(statusProvider.baseUrl, statusApiKey, statusTaskId)
     }
 
-    let providerId = ''
-    let modelId = ''
-
+    // 仅接受 "提供商ID/模型ID" 前缀格式。曾短暂支持过"无前缀容错匹配"（自动遍历所有渠道找同名模型），
+    // 但聚合多商家后同名模型极易误路由（命中结果只取决于渠道创建顺序，不可见亦不可控），故恢复严格模式。
     const parsed = parseModelId(model as string)
-    if (parsed) {
-      providerId = parsed.providerId
-      modelId = parsed.modelId
-    } else {
-      // 容错匹配：如果客户端未携带 "provider/model" 前缀（如原生 OpenCode 客户端直接请求 "big-pickle"）
-      // 自动在所有已启用的提供商模型列表中查找该模型
-      const allProviders = await getProviders(c.env)
-      for (const p of allProviders) {
-        if (!p.enabled) continue
-        const matched = findModelConfig(p.models, model as string)
-        if (matched && matched.enabled) {
-          providerId = p.id
-          modelId = matched.id
-          break
-        }
-      }
-
-      if (!providerId) {
-        return c.json({
-          error: {
-            message: `模型格式错误 "${model}"，未找到对应的提供商，请使用 提供商ID/模型ID 格式`,
-            type: 'invalid_request_error',
-          },
-        }, 400)
-      }
+    if (!parsed) {
+      return c.json({
+        error: {
+          message: `模型格式错误 "${model}"，请使用 提供商ID/模型ID 格式`,
+          type: 'invalid_request_error',
+        },
+      }, 400)
     }
+    const { providerId, modelId } = parsed
 
     const provider = await getProvider(c.env, providerId)
 
