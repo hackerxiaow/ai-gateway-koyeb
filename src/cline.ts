@@ -605,29 +605,97 @@ export async function fetchClineKeyQuota(env: Env, refreshToken: string): Promis
 // 后台：连通性测试 / 模型列表 / WorkOS 设备码授权
 // =====================================================================
 
+type ClineProbeVerdict =
+  | { kind: 'content'; bytes: number }
+  | { kind: 'error'; detail: string }
+  | { kind: 'empty'; reasoning: boolean; detail?: string }
+
+/**
+ * 读上游 SSE 判定是否「真通」。
+ * 上游对已下架/不可用的模型会返回 HTTP 200，但流内只有
+ * `{"error":{"code":"stream_initialization_failed", ...}}` 且全程无 content
+ * —— 只看状态码会把这类模型误报为「连接成功」。判定规则：出现正式 content 即成功
+ * （提前退出，不必读完）；出现 error 事件、或读到流尾仍无 content，即失败。
+ */
+async function probeClineStream(body: ReadableStream<Uint8Array> | null, maxBytes = 2 * 1024 * 1024): Promise<ClineProbeVerdict> {
+  if (!body) return { kind: 'empty', reasoning: false, detail: '无响应体' }
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let bytes = 0
+  let sawReasoning = false
+  let sawError = ''
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) {
+        bytes += value.length
+        buf += decoder.decode(value, { stream: true })
+      }
+      // 上游单个事件可能是多 KB 的大行，必须跨块缓冲到完整 \n 再解析
+      let nl: number
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim()
+        buf = buf.slice(nl + 1)
+        if (!line.startsWith('data:')) continue
+        const payload = line.slice(5).trim()
+        if (!payload || payload === '[DONE]') continue
+        let obj: any
+        try { obj = JSON.parse(payload) } catch { continue }
+        const errObj = obj?.error || obj?.data?.error
+        if (errObj) {
+          sawError = String(errObj.message || errObj.code || '未知错误')
+          continue
+        }
+        const delta = unwrapData(obj)?.choices?.[0]?.delta
+        const text = delta?.content
+        if (typeof text === 'string' && text.length > 0) return { kind: 'content', bytes }
+        if (delta?.reasoning_content || delta?.reasoning) sawReasoning = true
+      }
+      if (bytes >= maxBytes) break
+    }
+  } catch (err) {
+    if (sawError) return { kind: 'error', detail: sawError }
+    return { kind: 'empty', reasoning: sawReasoning, detail: (err as Error).message || '读取响应流失败' }
+  } finally {
+    try { await reader.cancel() } catch { /* 提前退出时的取消异常忽略 */ }
+  }
+  if (sawError) return { kind: 'error', detail: sawError }
+  return { kind: 'empty', reasoning: sawReasoning }
+}
+
 export async function testCline(env: Env, refreshToken: string, modelId: string): Promise<{ success: boolean; message: string; statusCode?: number }> {
   if (!refreshToken) return { success: false, message: '未填写 refreshToken', statusCode: 0 }
+  const model = modelId || CLINE_DEFAULT_MODEL
   try {
     const { accessToken } = await getClineAccess(env, refreshToken)
-    // 最小真实请求（免费通道强制 stream），消费完 body 避免连接悬挂
-    const sessionId = 'sess_' + Date.now()
-    const res = await fetch(CLINE_API_BASE + '/chat/completions', {
-      method: 'POST',
-      headers: clineChatHeaders(accessToken, sessionId),
-      body: JSON.stringify({
-        model: modelId || CLINE_DEFAULT_MODEL,
-        session_id: sessionId,
-        reasoning_effort: 'high',
-        messages: [{ role: 'user', content: 'hi' }],
-        stream: true,
-      }),
-      signal: AbortSignal.timeout(60000),
-    })
-    if (res.ok) {
-      await res.text().catch(() => '')
-      return { success: true, message: '连接成功', statusCode: 200 }
+    // 最小真实请求（免费通道强制 stream）。空流可能是单次概率性空响应，给第二次机会
+    let verdict: ClineProbeVerdict | null = null
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const sessionId = 'sess_' + Date.now()
+      const res = await fetch(CLINE_API_BASE + '/chat/completions', {
+        method: 'POST',
+        headers: clineChatHeaders(accessToken, sessionId),
+        body: JSON.stringify({
+          model,
+          session_id: sessionId,
+          reasoning_effort: 'high',
+          messages: [{ role: 'user', content: 'hi' }],
+          stream: true,
+        }),
+        signal: AbortSignal.timeout(60000),
+      })
+      if (!res.ok) {
+        return { success: false, message: `HTTP ${res.status}: ${(await readErrorBody(res)).slice(0, 200)}`, statusCode: res.status }
+      }
+      verdict = await probeClineStream(res.body)
+      if (verdict.kind !== 'empty') break
     }
-    return { success: false, message: `HTTP ${res.status}: ${(await readErrorBody(res)).slice(0, 200)}`, statusCode: res.status }
+    if (verdict?.kind === 'content') return { success: true, message: '连接成功（已收到内容）', statusCode: 200 }
+    if (verdict?.kind === 'error') return { success: false, message: `上游流内错误：${verdict.detail}`, statusCode: 200 }
+    const tail = verdict?.reasoning ? '，只收到 reasoning 无正式内容' : ''
+    return { success: false, message: `上游返回 200 但未产生内容${tail}${verdict?.detail ? '（' + verdict.detail + '）' : ''}`, statusCode: 200 }
   } catch (err) {
     return { success: false, message: (err as Error).message || '连接失败' }
   }
