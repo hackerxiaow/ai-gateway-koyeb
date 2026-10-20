@@ -63,7 +63,7 @@ const CLINE_AT_PREFIX = 'cline:at:'
 const CLINE_DEVICE_PREFIX = 'cline:dev:'
 
 /** 免费通道判定：非流式被上游限流，必须强制 stream 后由网关聚合。
- *  真·零扣费免费模型（:free 结尾，以及官方直通 deepseek/deepseek-v4-flash） */
+ *  注意这是「上游通道形态」判定（deepseek/、cline-free/、cline-pass/ 前缀），与是否零扣费无关 */
 function isFreeClineModel(modelId: string): boolean {
   return (
     modelId.endsWith(':free') ||
@@ -74,22 +74,24 @@ function isFreeClineModel(modelId: string): boolean {
   )
 }
 
-/** 默认模型（真·零扣费首选） */
-export const CLINE_DEFAULT_MODEL = 'deepseek/deepseek-v4-flash'
+/** 默认模型（官方 cline-free 免费额度，实测 cost=0、不扣余额） */
+export const CLINE_DEFAULT_MODEL = 'cline-free/mimo-v2.6-flash'
 
 /**
  * 后台「获取模型列表」返回的内置清单。
- * 100% 绝对真免费模型（实测扣费为 0，不消耗任何账户赠金与余额）
+ * 全部实测 cost=0（官方 cline-free 免费额度 + :free 后缀模型），不扣账户余额。
+ * 注意：deepseek/deepseek-v4-flash 自 2026-10 起按量计费，已不再列入。
  */
 const CLINE_BUILTIN_MODELS = [
-  'deepseek/deepseek-v4-flash',
+  'cline-free/mimo-v2.6-flash',
+  'cline-free/nemotron-3.5-super-vl',
+  'cline-free/muse-spark-1.3-contributor',
+  'cline-free/solar-mini4',
   'nvidia/nemotron-3-super-120b-a12b:free',
   'nvidia/nemotron-3.5-lightning:free',
   'poolside/laguna-s-2.1:free',
   'poolside/laguna-xs-2.1:free',
   'cohere/north-mini-code:free',
-  'apodex/apodex-1.1-mini:free',
-  'inclusionai/ling-3.0-flash-sante:free',
   'dots-studio/dots-3-note-preview:free',
   'liquid/lfm-2.5-2.6b:free',
   'nvidia/nemotron-3.5-content-safety:free',
@@ -729,12 +731,13 @@ export async function fetchClineModels(env: Env, refreshToken: string): Promise<
         : []
     if (!list.length) throw new Error('上游返回的模型列表为空')
     // 排序：
-    // 1. 绝对真免费模型（:free 结尾与 deepseek/deepseek-v4-flash）排第一梯队（实测 0 扣费）
-    const zeroCost = list.filter((m) => m.endsWith(':free') || m === 'deepseek/deepseek-v4-flash')
-    // 2. 赠金通道模型（~ 前缀）排第二梯队（消耗账号 $0.50 赠金的顶级模型）
+    // 1. 零扣费模型（官方 cline-free 前缀与 :free 后缀）排第一梯队（实测 cost=0）
+    const isZeroCost = (m: string) => m.startsWith('cline-free/') || m.endsWith(':free')
+    const zeroCost = list.filter(isZeroCost)
+    // 2. 赠金通道模型（~ 前缀）排第二梯队（消耗账号赠金的顶级模型）
     const tilde = list.filter((m) => m.startsWith('~'))
     // 3. 普通付费模型排后面供用户自由勾选
-    const paid = list.filter((m) => !m.endsWith(':free') && m !== 'deepseek/deepseek-v4-flash' && !m.startsWith('~'))
+    const paid = list.filter((m) => !isZeroCost(m) && !m.startsWith('~'))
     return { success: true, models: [...zeroCost, ...tilde, ...paid] }
   } catch (err) {
     return {
