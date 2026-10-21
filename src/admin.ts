@@ -82,10 +82,11 @@ function normalizeArray<T>(
 /** 规范化 mirrorUrls: 接受数组或换行/逗号分隔字符串, 去空去重 */
 function normalizeMirrorUrls(value: unknown): string[] | undefined {
   if (value === undefined || value === null) return undefined
-  const parts = Array.isArray(value)
-    ? value as string[]
-    : String(value).split('\n').flatMap(s => s.split(',')).map(s => s.trim())
-  const cleaned = [...new Set(parts.map(s => String(s).trim()).filter(Boolean))]
+  const rawParts = Array.isArray(value) ? value.map((v) => String(v)) : [String(value)]
+  // 每个条目内再按 真实换行 / 逗号 / 字面量反斜杠+n 切分：
+  // 备份导入等路径可能把多条 URL 塞进同一个数组元素，直接 trim 会拼出粘连的垃圾地址
+  const parts = rawParts.flatMap((s) => s.split(/\\n|[\n,]/)).map((s) => s.trim())
+  const cleaned = [...new Set(parts.filter(Boolean))]
   return cleaned.length > 0 ? cleaned : undefined
 }
 

@@ -35,6 +35,30 @@ function passthroughEventStream(response: Response): Response | null {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
 }
 
+/**
+ * 只约束「等待上游响应头」阶段的超时。
+ * 不能把 AbortSignal.timeout(60000) 直接挂在 fetch 上：该信号在 undici 中作用于
+ * 整个请求生命周期（含响应体流式读取），会让持续超过 60 秒的 SSE 回复在生成中途断流。
+ */
+function createHeadersTimeout(ms = 60000): { signal: AbortSignal; done: () => void } {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error('上游 60 秒内未返回响应头')), ms)
+  return { signal: controller.signal, done: () => clearTimeout(timer) }
+}
+
+/**
+ * 记录用量改为 waitUntil 异步执行：强一致存储写入（Blob/D1/PG）放在返回响应前
+ * 会白白推迟首字节，叠加进平台 120 秒执行预算里。
+ */
+function recordUsageLater(c: Context<{ Bindings: Env }>, record: UsageRecord): void {
+  const task = addUsageRecord(c.env, record).catch(() => {})
+  try {
+    c.executionCtx?.waitUntil(task)
+  } catch {
+    /* 无 executionCtx 的运行时忽略：task 已在后台执行且带 catch，不会产生未处理拒绝 */
+  }
+}
+
 /** 读取响应体（保留原始字节），返回 JSON 解析结果与原始 Response */
 async function readResponseWithUsage(response: Response): Promise<{ body: string; json: unknown }> {
   const buf = await response.arrayBuffer()
@@ -393,7 +417,7 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
         completionTokens: 0,
         latencyMs: Date.now() - startedAt,
       }
-      await addUsageRecord(c.env, record).catch(() => {})
+      recordUsageLater(c, record)
       return audioResp
     }
 
@@ -418,7 +442,7 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
         completionTokens: 0,
         latencyMs: Date.now() - startedAt,
       }
-      await addUsageRecord(c.env, record).catch(() => {})
+      recordUsageLater(c, record)
       return videoResp
     }
 
@@ -608,7 +632,7 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
           completionTokens: 0,
           latencyMs: Date.now() - startedAt,
         }
-        await addUsageRecord(c.env, record).catch(() => {})
+        recordUsageLater(c, record)
         headers.delete('content-length')
         return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
       }
@@ -627,7 +651,7 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
         completionTokens,
         latencyMs: Date.now() - startedAt,
       }
-      await addUsageRecord(c.env, record).catch(() => {})
+      recordUsageLater(c, record)
       return new Response(responseBody, { status: response.status, statusText: response.statusText, headers })
     }
 
@@ -657,12 +681,18 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
         forwardHeaders['anthropic-version'] = '2023-06-01'
       }
       try {
-        const response = await fetch(forwardUrl, {
-          method: c.req.method,
-          headers: forwardHeaders,
-          body: forwardPayload,
-          signal: AbortSignal.timeout(60000),
-        })
+        const headersGuard = createHeadersTimeout()
+        let response: Response
+        try {
+          response = await fetch(forwardUrl, {
+            method: c.req.method,
+            headers: forwardHeaders,
+            body: forwardPayload,
+            signal: headersGuard.signal,
+          })
+        } finally {
+          headersGuard.done()
+        }
         // 流式响应直接透传，避免整段缓冲导致客户端长时间收不到数据而重连
         const passthrough = passthroughEventStream(response)
         if (passthrough) {
@@ -677,7 +707,7 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
             completionTokens: 0,
             latencyMs: Date.now() - startedAt,
           }
-          await addUsageRecord(c.env, record).catch(() => {})
+          recordUsageLater(c, record)
           return passthrough
         }
         // 读取 body 提取 usage 并记录
@@ -694,7 +724,7 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
           completionTokens,
           latencyMs: Date.now() - startedAt,
         }
-        await addUsageRecord(c.env, record).catch(() => {})
+        recordUsageLater(c, record)
         const responseHeaders: Record<string, string> = {
           'Content-Type': response.headers.get('Content-Type') || 'application/json',
           'Cache-Control': 'no-store',
@@ -776,12 +806,18 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
           forwardHeaders['Authorization'] = `Bearer ${apiKey}`
         }
 
-        const response = await fetch(forwardUrl, {
-          method: c.req.method,
-          headers: forwardHeaders,
-          body: forwardPayload,
-          signal: AbortSignal.timeout(60000),
-        })
+        const headersGuard = createHeadersTimeout()
+        let response: Response
+        try {
+          response = await fetch(forwardUrl, {
+            method: c.req.method,
+            headers: forwardHeaders,
+            body: forwardPayload,
+            signal: headersGuard.signal,
+          })
+        } finally {
+          headersGuard.done()
+        }
 
         if (response.ok) {
           // 成功：重置健康状态
@@ -805,7 +841,7 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
               completionTokens: 0,
               latencyMs: Date.now() - startedAt,
             }
-            await addUsageRecord(c.env, record).catch(() => {})
+            recordUsageLater(c, record)
             return passthrough
           }
 
@@ -823,7 +859,7 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
             completionTokens,
             latencyMs: Date.now() - startedAt,
           }
-          await addUsageRecord(c.env, record).catch(() => {})
+          recordUsageLater(c, record)
 
           const responseHeaders: Record<string, string> = {
             'Content-Type': response.headers.get('Content-Type') || 'application/json',

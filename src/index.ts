@@ -4,6 +4,7 @@ import { logger } from 'hono/logger'
 import type { Env } from './types'
 import { adminAuthMiddleware, proxyKeyAuthMiddleware, handleLogin, handleLogout } from './auth'
 import { handleProxy, handleModels } from './proxy'
+import { withSseKeepAlive } from './sse-keepalive'
 import {
   handleStatus,
   handleGetProviders,
@@ -240,6 +241,17 @@ app.post('/admin/api/backup/to-telegram', handleBackupToTelegram)
 
 // ===== API 转发路由（需转发 Key 验证） =====
 app.use('/v1/*', proxyKeyAuthMiddleware)
+
+// SSE 响应统一加 keep-alive：静默期间注入 `: ping` 注释帧，防客户端与网关之间的
+// NAT/中间代理把长时间无数据的连接判死。仅处理 text/event-stream，其它响应原样放行。
+app.use('/v1/*', async (c, next) => {
+  await next()
+  const res = c.res
+  const contentType = res.headers.get('content-type') || ''
+  if (contentType.includes('text/event-stream') && res.body) {
+    c.res = withSseKeepAlive(res)
+  }
+})
 app.get('/v1/models', handleModels)
 
 // OpenAI 兼容代理端点（全部透传转发，参考 one-api-cf 端点清单）
