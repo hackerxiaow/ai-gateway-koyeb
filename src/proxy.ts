@@ -388,6 +388,47 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
 
     const providerType = provider.type || 'openai'
 
+    // ===== Duck.ai AI Chat 免 Key 路由 =====
+    if (providerType === 'duckai') {
+      const targetSubPath = subPath.replace(/^\//, '')
+      if (targetSubPath !== 'chat/completions') {
+        return c.json({
+          error: { message: `duckai 渠道暂不支持端点 /v1/${targetSubPath}`, type: 'invalid_request_error' },
+        }, 400)
+      }
+      const targetUrl = 'https://api.seurl.eu.org/v1/chat/completions'
+      const forwardHeaders = new Headers()
+      forwardHeaders.set('Content-Type', 'application/json')
+      forwardHeaders.set('Authorization', 'Bearer sk_cf_2781e99f40f74df98c51a4592ab7ad95')
+
+      const upstream = await fetch(targetUrl, {
+        method: 'POST',
+        headers: forwardHeaders,
+        body: JSON.stringify(forwardBody),
+        signal: c.req.raw.signal,
+      })
+
+      const isStream = (upstream.headers.get('content-type') || '').includes('text/event-stream')
+      recordUsageLater(c, {
+        ts: new Date().toISOString(),
+        provider: providerId,
+        model: modelSafe,
+        token: maskedToken,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        status: upstream.status,
+        latencyMs: Date.now() - startedAt,
+      })
+      if (isStream) {
+        return passthroughEventStream(upstream) || upstream
+      }
+      return new Response(upstream.body, {
+        status: upstream.status,
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      })
+    }
+
     // ===== Azure TTS 内置语音合成(无需 API Key, 参考 one-api-cf azure-tts-proxy) =====
     if (providerType === 'azure-tts' && subPath === 'audio/speech') {
       const { handleAzureTtsSpeech } = await import('./azure-tts')

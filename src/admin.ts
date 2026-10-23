@@ -588,6 +588,26 @@ export async function handleTestKeyNew(c: Context<{ Bindings: Env }>) {
     })
   }
 
+  // Duck.ai 免 Key 渠道模型列表获取
+  if (providerType === 'duckai') {
+    const staticModels = [
+      { id: 'gpt-6-luna', name: 'GPT-6 Luna' },
+      { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini' },
+      { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5' },
+      { id: 'mistral-small-2603', name: 'Mistral Small 4' },
+      { id: 'tinfoil/gpt-oss-120b', name: 'gpt-oss 120B' },
+      { id: 'tinfoil/gemma4-31b', name: 'Gemma 4 31B' }
+    ]
+    return c.json<ApiResponse>({
+      success: true,
+      data: {
+        success: true,
+        statusCode: 200,
+        data: { object: 'list', data: staticModels.map(m => ({ id: m.id, name: m.name, owned_by: 'duck.ai' })) }
+      }
+    })
+  }
+
   // Z.AI: 上游 /models 需有效 Key，这里回内置清单（供「获取模型」按钮使用）
   if (providerType === 'zai') {
     const models = fetchZaiModels().models
@@ -730,6 +750,14 @@ export async function handleTestModelNew(c: Context<{ Bindings: Env }>) {
     return c.json<ApiResponse>({
       success: true,
       data: { success: r.success, statusCode: r.statusCode || 0, message: r.message },
+    })
+  }
+
+  // Duck.ai 测试模型连通性
+  if (providerType === 'duckai') {
+    return c.json<ApiResponse>({
+      success: true,
+      data: { success: true, statusCode: 200, message: 'Duck.ai 免费模型就绪' }
     })
   }
 

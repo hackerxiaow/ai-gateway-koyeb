@@ -103,6 +103,7 @@ export function renderProviderPanel(p: Provider): string {
         <option value="zai" ${p.type === 'zai' ? 'selected' : ''}>Z.AI (GLM 国际)</option>
         <option value="codebuddy" ${p.type === 'codebuddy' ? 'selected' : ''}>CodeBuddy (腾讯) 反代</option>
         <option value="cline" ${p.type === 'cline' ? 'selected' : ''}>Cline 反代</option>
+        <option value="duckai" ${p.type === 'duckai' ? 'selected' : ''}>Duck.ai 免 Key 聊天</option>
       </select>
     </div>
   </div>
@@ -365,6 +366,7 @@ ${H('控制台')}
                 <option value="zai">Z.AI (GLM 国际)</option>
                 <option value="codebuddy">CodeBuddy (腾讯) 反代</option>
                 <option value="cline">Cline 反代</option>
+                <option value="duckai">Duck.ai 免 Key 聊天</option>
               </select>
               <span class="form-helper" id="apt-hint-new">Agnes 等聚合平台建议选 OpenAI 兼容, 视频模型自动走异步适配。</span>
             </div>
